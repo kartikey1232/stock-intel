@@ -12,7 +12,10 @@
 #               share a name). Only the phrase itself is removed, so other mentions in
 #               the same text still count.
 #   conditional_aliases: optional; names that need specific context in the same
-#               sentence, from a given date on (before it they are ordinary aliases).
+#               sentence, from a given date on (before it they are ordinary aliases;
+#               without `from` the context is always required).
+#   The stock's all-caps NSE symbol (e.g. RELIANCE) is always a strong, case-sensitive
+#   alias as well; exclude_patterns still apply to it.
 
 stocks:
   - symbol: RELIANCE
@@ -82,7 +85,8 @@ stocks:
     yf: TMPV.NS
     name: Tata Motors Passenger Vehicles Ltd
     sector: Automobile
-    aliases: [Tata Motors Passenger Vehicles, TMPV, Jaguar Land Rover, JLR]
+    aliases: [Tata Motors Passenger Vehicles, TMPV, Jaguar Land Rover, JLR, Land Rover,
+              Range Rover]
     news_terms: [Tata Motors Passenger Vehicles, TMPV, Jaguar Land Rover]
     exclude_patterns: [Tata Motors CV, Tata Motors Commercial Vehicles, TMCV]
     conditional_aliases:
@@ -92,3 +96,6 @@ stocks:
         from: 2025-10-14
         context: [passenger vehicle, PV, cars, EV, JLR, Jaguar Land Rover, Nexon, Punch,
                   Harrier, Safari, Curvv, Tiago]
+      # "Defender" is also Microsoft Defender, a newspaper name, a football position...
+      - names: [Defender]
+        context: [Land Rover]

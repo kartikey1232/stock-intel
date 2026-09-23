@@ -4,17 +4,20 @@ For every article not yet linked, each stock's names are matched in the title, s
 and body text:
 
 - Whole-word matching. All-uppercase aliases (RIL, TCS, HDFC) are case-sensitive; other
-  names ignore case. Longer names win over names they contain ("Tata Motors Passenger
+  strong names ignore case; ambiguous names must be Capitalised or ALL CAPS ("reliance"
+  the word never matches). Longer names win over names they contain ("Tata Motors Passenger
   Vehicles" is one match, not also "Tata Motors").
 - The stock's exclude_patterns are blanked out first ("HDFC Life" can't match "HDFC").
 - ambiguous_aliases count only with finance context in the same sentence.
 - conditional_aliases count only with their own context in the same sentence, from
   their `from` date on (the article date is published_at, else first_seen_at).
+- The stock's all-caps NSE symbol is always a strong alias.
 - Confidence: a title match is strongest, then summary, then body. A single passing
   mention in a long body is weak. Ambiguous or context-dependent matches score a bit
-  lower. In market-wrap headlines (Sensex/Nifty/top gainers...) a stock is only the
-  subject if it's the sole watchlist stock named and comes before the index term;
-  otherwise its title confidence is halved.
+  lower. In market-wrap headlines (Sensex/Nifty/top gainers...) a stock's title
+  confidence is halved unless it's the subject: the sole watchlist stock named before
+  the index term, or directly followed by a price-move verb ("HDFC Bank jumps 2.5%")
+  without being the tail of a list ("HDFC Bank, Infosys fall").
 
 Mentions with confidence >= LINK_THRESHOLD count as "the article is about this stock".
 All mentions are stored so downstream steps can choose their own cut-off.
@@ -88,6 +91,17 @@ def any_term_regex(terms: tuple[str, ...], plural: bool = True) -> re.Pattern[st
 
 FINANCE_RE = any_term_regex(FINANCE_CONTEXT)
 MARKET_WRAP_RE = any_term_regex(MARKET_WRAP_TERMS, plural=False)
+# A stock followed by a price-move verb is the subject of its own clause, even inside a
+# market wrap ("Nifty slips; HDFC Bank jumps 2.5%"). "shares"/"stock" may sit in between.
+PRICE_MOVE_RE = re.compile(
+    r"\s+(?:shares?\s+|stocks?\s+)?"
+    r"(?:jump(?:s|ed)?|fall(?:s|ing)?|fell|rise(?:s|n)?|rose|rising|gain(?:s|ed)?|"
+    r"slip(?:s|ped)?|surge(?:s|d)?|tank(?:s|ed)?|rall(?:y|ies|ied)|drop(?:s|ped)?|"
+    r"climb(?:s|ed)?)\b",
+    re.IGNORECASE,
+)
+# ...unless it's the last item of a list the verb belongs to: "HDFC Bank, Infosys fall".
+LIST_BEFORE_RE = re.compile(r"(?:,|&|\band)\s*$", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -106,22 +120,31 @@ class StockMatcher:
     def __init__(self, stock: Stock) -> None:
         self.symbol = stock.symbol
         names = [Name(a, "alias") for a in stock.aliases]
+        if stock.symbol not in stock.aliases:
+            # The all-caps NSE symbol (RELIANCE, INFY) is always a strong alias. It's
+            # case-sensitive, and exclude_patterns (case-insensitive) still mask e.g.
+            # "RELIANCE POWER" before matching.
+            names.append(Name(stock.symbol, "alias"))
         names += [Name(a, "ambiguous", FINANCE_RE) for a in stock.ambiguous_aliases]
         for cond in stock.conditional_aliases:
             context = any_term_regex(cond.context)
             names += [Name(n, "conditional", context, cond.from_date) for n in cond.names]
-        # Longest first so a name never also matches as the shorter name it contains.
-        self.names = sorted(names, key=lambda n: len(n.text), reverse=True)
+        # Longest first so a name never also matches as the shorter name it contains;
+        # among equal lengths, strong aliases first ("RELIANCE" before ambiguous "Reliance").
+        priority = {"alias": 0, "conditional": 1, "ambiguous": 2}
+        self.names = sorted(names, key=lambda n: (-len(n.text), priority[n.kind]))
+        # Strong names ignore case. Ambiguous names are often common words too ("reliance"),
+        # so like context terms they must be Capitalised or ALL CAPS.
         self.regex = re.compile(
-            "|".join(f"({term_pattern(n.text, alias=True)})" for n in self.names)
+            "|".join(f"({term_pattern(n.text, alias=n.kind != 'ambiguous')})" for n in self.names)
         )
         excludes = sorted(stock.exclude_patterns, key=len, reverse=True)  # longest wins
         self.exclude = (
             re.compile("|".join(f"(?i:{term_pattern(p)})" for p in excludes)) if excludes else None
         )
 
-    def matches(self, text: str, event_date: dt.date) -> list[tuple[Name, int]]:
-        """(name, position) for every valid mention of this stock in `text`."""
+    def matches(self, text: str, event_date: dt.date) -> list[tuple[Name, int, int]]:
+        """(name, start, end) for every valid mention of this stock in `text`."""
         if not text:
             return []
         if self.exclude:
@@ -130,7 +153,7 @@ class StockMatcher:
         for m in self.regex.finditer(text):
             name = self.names[m.lastindex - 1]
             if self._context_ok(name, text, m.start(), event_date):
-                found.append((name, m.start()))
+                found.append((name, m.start(), m.end()))
         return found
 
     @staticmethod
@@ -181,11 +204,11 @@ def link_article(
     for symbol, locs in found.items():
         location = next(loc for loc in LOCATIONS if locs[loc])
         hits = locs[location]
-        strong = any(name.kind == "alias" or _pre_change(name, event_date) for name, _ in hits)
+        strong = any(name.kind == "alias" or _pre_change(name, event_date) for name, *_ in hits)
         confidence = _confidence(location, strong, sum(map(len, locs.values())), fields["body"])
         if location == "title" and wrap:
-            is_subject = in_title == [symbol] and hits[0][1] < wrap.start()
-            if not is_subject:
+            leads = in_title == [symbol] and hits[0][1] < wrap.start()
+            if not (leads or any(_moves_itself(fields["title"], s, e) for _, s, e in hits)):
                 confidence *= 0.5
         mentions.append(
             {
@@ -197,6 +220,12 @@ def link_article(
             }
         )
     return mentions
+
+
+def _moves_itself(title: str, start: int, end: int) -> bool:
+    """True if the name at [start, end) is directly followed by a price-move verb and
+    isn't the tail of a list ("HDFC Bank, Infosys fall")."""
+    return bool(PRICE_MOVE_RE.match(title, end)) and not LIST_BEFORE_RE.search(title[:start])
 
 
 def _pre_change(name: Name, event_date: dt.date) -> bool:

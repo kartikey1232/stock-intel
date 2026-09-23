@@ -87,6 +87,13 @@ uv run streamlit run dashboard.py               # launch the dashboard
   `processing.entities --full` and check `tests/fixtures/labelled_headlines.yaml`. The
   test fails if precision or recall drops below 0.9. Add new real-world misses to that
   fixture instead of tuning rules to it.
+- Linking case rules: all-caps names (RIL, TCS, and each stock's NSE symbol, which is
+  always a strong alias) are case-sensitive. Other strong aliases ignore case. Ambiguous
+  aliases and context terms must be Capitalised or ALL CAPS ("reliance" the word never
+  matches). exclude_patterns are case-insensitive, so they also mask ALL-CAPS headlines.
+- In market-wrap titles, a stock keeps full confidence only as the clause subject: the
+  sole stock named before the index term, or directly followed by a price-move verb
+  (optionally "shares"/"stock" in between) and not the tail of a list ("X, Y fall").
 - Changing an article's text (extraction, --reclean) clears `articles.linked_at`, so the
   next entities run re-links it.
 - `published_at` is genuinely unreliable: CarDekho pages from 2010-2011 arrive via Google

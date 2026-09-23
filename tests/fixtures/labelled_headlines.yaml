@@ -154,3 +154,63 @@ headlines:
     about: [INFY, TCS]
   - title: "HDFC Bank, Reliance Industries among top FPI buys in September"
     about: [HDFCBANK, RELIANCE]
+
+  # --- Land Rover / Range Rover / Defender (TMPV) ---------------------------------------
+  - title: "Land Rover to launch electric Discovery Sport in India next year"
+    about: [TMPV]
+  - title: "Range Rover Sport SV bookings open in India at ₹2.8 crore"
+    about: [TMPV]
+  - title: "Land Rover considering a Defender pickup truck"
+    about: [TMPV]
+    why: real Google result that previously didn't link
+  - title: "Defender Octa review: Land Rover's most extreme SUV yet"
+    about: [TMPV]
+    why: Defender with Land Rover in the same headline
+  - title: "Microsoft Defender update fixes zero-day flaw exploited in the wild"
+    about: []
+    why: trap, Defender without Land Rover
+  - title: "Mohun Bagan sign Brazilian defender on two-year deal"
+    about: []
+    why: trap, lowercase defender without Land Rover
+
+  # --- "Tata Motors share price" stays unlinked after the demerger --------------------------
+  - title: "Tata Motors Share Price Today: Rs 313.85 After 4.25% Gain"
+    date: 2026-09-17
+    about: []
+    why: decided that post-demerger "Tata Motors" means the CV company (Tata Motors Ltd)
+
+  # --- All-caps NSE symbols as aliases --------------------------------------------------
+  - title: "RELIANCE Outlook for the Week"
+    about: [RELIANCE]
+    why: symbol, previously missed (bare Reliance is ambiguous)
+  - title: "INFY Outlook for the Week"
+    about: [INFY]
+  - title: "HDFCBANK: support at ₹740, resistance at ₹760 for the week"
+    about: [HDFCBANK]
+  - title: "RELIANCE POWER SHARES SURGE 10% ON DEBT SETTLEMENT"
+    about: []
+    why: trap, exclusions must still apply to all-caps text
+  - title: "RELIANCE INFRA HITS UPPER CIRCUIT AFTER ARBITRATION WIN"
+    about: []
+    why: trap, all-caps excluded name
+  - title: "Firm places reliance on RBI guidance for loan restructuring"
+    about: []
+    why: trap, lowercase common word is not the symbol
+
+  # --- Market wraps where the stock moves on its own -------------------------------------
+  - title: "Bank Nifty outperforms benchmarks, rises above 56,400; HDFC Bank jumps over 2.5%: What lies ahead?"
+    about: [HDFCBANK]
+    why: real headline; stock is the subject of its own clause
+  - title: "Sensex falls 400 points; Infosys slips 3% after guidance cut"
+    about: [INFY]
+  - title: "Nifty ends higher as RIL rallies 3% on Jio tariff hike"
+    about: [RELIANCE]
+  - title: "Sensex, Nifty close flat; TCS shares fall 2% on weak deal pipeline"
+    about: [TCS]
+    why: verb after "shares"
+  - title: "SENSEX, NIFTY50 trade on a flat note; Reliance, Bajaj Finance gain, HDFC Bank, Infosys fall"
+    about: []
+    why: real headline; trap, list items share the verb
+  - title: "Stock market today: Nifty slips as HDFC Bank and Infosys drop 1% each"
+    about: []
+    why: trap, listed stocks share the verb

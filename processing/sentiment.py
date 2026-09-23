@@ -117,7 +117,7 @@ def mention_sentences(
 ) -> list[str]:
     """Distinct sentences of `text` in which `matcher`'s stock is validly mentioned."""
     sentences: list[str] = []
-    for _, pos in matcher.matches(text or "", event_date):
+    for _, pos, _end in matcher.matches(text or "", event_date):
         sentence = sentence_at(text, pos).strip()
         if sentence and sentence not in sentences:
             sentences.append(sentence)

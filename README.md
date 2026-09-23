@@ -94,9 +94,10 @@ uv run python -m processing.sentiment --report   # FinBERT sentiment + daily per
   name rules in the watchlist. It skips other companies that share a name (HDFC Life,
   Reliance Power), requires finance context for ambiguous names like "HDFC", and applies
   date-aware rules (after the demerger, bare "Tata Motors" counts for TMPV only when the
-  sentence is about passenger vehicles). Each match gets a confidence: a title mention
-  scores highest, a single mention in a long article lowest, and stocks listed in market
-  wraps score low. A labelled set of 49 headlines checks it
+  sentence is about passenger vehicles). Each stock's all-caps NSE symbol (RELIANCE,
+  INFY) always counts. Each match gets a confidence: a title mention scores highest, a
+  single mention in a long article lowest, and stocks listed in market wraps score low,
+  unless the stock drives its own clause ("…; HDFC Bank jumps 2.5%"). A labelled set of 67 headlines checks it
   (`uv run python -m processing.entities --evaluate`).
 - **Sentiment** scores each article–stock link with FinBERT (ProsusAI/finbert, pinned
   commit, CPU). The input is the headline plus only the sentences that mention the stock.
@@ -277,9 +278,9 @@ uv run ruff format .       # format
     Google News articles are `skipped` because their links can't be resolved. Paywall
     detection relies on the schema.org `isAccessibleForFree` flag.
   - Entity linking is rule-based. Known misses: a bare "Reliance" without finance words
-    ("Ambani says Reliance will invest…"), and share-price pages that still call TMPV
-    "Tata Motors". A stock named after an index term in a headline ("Bank Nifty rises;
-    HDFC Bank jumps 2.5%") is treated as part of a market wrap.
+    ("Ambani says Reliance will invest…"). Share-price pages that still call TMPV "Tata
+    Motors" are deliberately not linked, because after the demerger "Tata Motors" means
+    the CV company.
   - FinBERT scores the tone of the text, not its effect on the stock. "Supplier wins an
     order from Reliance" reads as positive, and the model was trained on English
     financial news, not Indian market phrasing.

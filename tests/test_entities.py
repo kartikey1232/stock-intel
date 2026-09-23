@@ -227,3 +227,51 @@ def test_loader_reads_new_optional_fields(tmp_path: Path) -> None:
 def test_loader_rejects_bad_new_fields(tmp_path: Path, extra: str, message: str) -> None:
     with pytest.raises(WatchlistError, match=message):
         load_watchlist(write_watchlist(tmp_path, extra))
+
+
+# --- symbol aliases, Defender, price-move verbs ----------------------------------------
+
+REAL = [entities.StockMatcher(s) for s in load_watchlist()]
+
+
+def real(title: str, date=AFTER) -> dict[str, dict]:
+    return {m["symbol"]: m for m in entities.link_article(title, None, None, date, REAL)}
+
+
+def test_all_caps_symbol_is_a_strong_case_sensitive_alias() -> None:
+    m = real("RELIANCE Outlook for the Week")["RELIANCE"]
+    assert (m["matched_alias"], m["confidence"]) == ("RELIANCE", 0.95)
+    assert "HDFCBANK" in real("HDFCBANK: support at 740")
+    assert real("Firm places reliance on RBI loan guidance") == {}  # common word, lowercase
+
+
+def test_exclusions_apply_to_all_caps_text() -> None:
+    assert real("RELIANCE POWER SHARES SURGE 10%") == {}
+    assert real("RELIANCE INFRA HITS UPPER CIRCUIT") == {}
+    assert "RELIANCE" in real("RELIANCE POWER AND RELIANCE SHARES DIVERGE")
+
+
+def test_defender_needs_land_rover_in_the_same_sentence() -> None:
+    assert real("Microsoft Defender update fixes flaw") == {}
+    assert real("Defender Octa review: Land Rover's toughest SUV")["TMPV"]["mention_count"] == 2
+    body = "Microsoft Defender flagged the file. Land Rover was unaffected."
+    hits = entities.link_article("Security update", None, body, AFTER, REAL)
+    assert [h["matched_alias"] for h in hits] == ["Land Rover"]  # Defender not counted
+
+
+@pytest.mark.parametrize(
+    ("title", "subject"),
+    [
+        ("Bank Nifty rises above 56,400; HDFC Bank jumps over 2.5%", True),
+        ("Sensex, Nifty flat; TCS shares fall 2% on weak deals", True),
+        ("Nifty ends higher as RIL rallied 3% on tariff hike", True),
+        ("SENSEX flat; Reliance, Bajaj Finance gain, HDFC Bank, Infosys fall", False),
+        ("Nifty slips as HDFC Bank and Infosys drop 1% each", False),
+        ("Sensex, Nifty end higher; HDFC Bank, Infosys, RIL top gainers", False),
+    ],
+)
+def test_price_move_verb_marks_the_subject_in_market_wraps(title: str, subject: bool) -> None:
+    linked_symbols = {
+        s for s, m in real(title).items() if m["confidence"] >= entities.LINK_THRESHOLD
+    }
+    assert bool(linked_symbols) == subject
