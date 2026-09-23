@@ -279,6 +279,7 @@ def test_results_table_has_yoy_qoq_and_falls_back_to_total_income() -> None:
     assert last["top_line_yoy"] == pytest.approx(0.5)
     assert last["net_profit_qoq"] == pytest.approx(20 / 13 - 1)
     assert last["source"] == "XBRL"
+    assert last["notes"] == ""
     assert dashboard.results_table(rows, "standalone").empty
 
 

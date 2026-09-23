@@ -16,7 +16,7 @@ from config.loader import Stock, load_watchlist
 from config.news_sources import load_news_sources
 from processing.adjustments import adjust_prices
 from processing.entities import LINK_THRESHOLD
-from processing.results import changes
+from processing.results import changes, joined_notes
 from processing.sentiment import TradingCalendar, news_time, session_for
 from storage.db import (
     project_path,
@@ -178,7 +178,7 @@ def results_table(results: pd.DataFrame, basis: str, quarters: int = 8) -> pd.Da
 
     Columns: quarter, period_end, top_line (revenue, or total income when there's no
     revenue line, as for banks), top_line_yoy, top_line_qoq, net_profit, net_profit_yoy,
-    net_profit_qoq, eps, source, flags.
+    net_profit_qoq, eps, source, flags, notes (why QoQ/YoY aren't like-for-like, if so).
     """
     rows = results[results["basis"] == basis]
     if rows.empty:
@@ -197,6 +197,7 @@ def results_table(results: pd.DataFrame, basis: str, quarters: int = 8) -> pd.Da
         row["eps"] = by["value"].get("eps")
         row["source"] = "PDF (lower trust)" if (raw["trust"] == "low").any() else "XBRL"
         row["flags"] = "; ".join(sorted(raw["flag"].dropna().unique()))
+        row["notes"] = joined_notes(q[q["metric"].isin([top, "net_profit"])])
         out.append(row)
     table = pd.DataFrame(out).sort_values("period_end")
     return table.tail(quarters).reset_index(drop=True)
@@ -723,6 +724,10 @@ def render_results(results: pd.DataFrame) -> None:
         width="stretch",
     )
     st.caption("₹ crore; EPS in ₹ per share, as reported (not restated for bonuses/splits).")
+    for quarter, note in table.loc[table["notes"] != "", ["quarter", "notes"]].itertuples(
+        index=False
+    ):
+        st.caption(f"⚠ {quarter}: {note}")
 
 
 def sidebar(stocks: list[Stock]) -> tuple[Stock, str]:

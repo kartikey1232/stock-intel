@@ -17,6 +17,11 @@ filing splits it), eps (basic), and for banks interest_earned, interest_expended
 gross_npa, net_npa, gross_npa_pct, net_npa_pct. Bank consolidated XBRL fills the NPA fields
 with 0 (they're reported standalone only); those placeholders are dropped.
 
+Comparability: when a quarter reports profit from discontinued operations (e.g. TMPV's
+Oct 2025 demerger of the CV business, booked in FY26Q2), its top line excludes that
+business while earlier quarters, as originally filed, include it. XBRL has no restated
+comparatives, so `changes` marks QoQ/YoY that span such a quarter instead of restating.
+
 Validation flags a headline value that moves more than 5x (up or down) from the previous
 quarter, or changes sign where that shouldn't happen (revenue, income, NII, NPAs); a
 profit or EPS sign change is flagged for checking. Flags usually mean a unit or parsing
@@ -62,6 +67,10 @@ HEADLINE = (
     "nii", "provisions", "gross_npa", "net_npa", "gross_npa_pct", "net_npa_pct",
 )  # fmt: skip
 NPA_METRICS = ("gross_npa", "net_npa", "gross_npa_pct", "net_npa_pct")
+DISCONTINUED_METRICS = (
+    "x:ProfitLossFromDiscontinuedOperationsAfterTax",
+    "x:ProfitLossFromDiscontinuedOperationsBeforeTax",
+)
 
 # XBRL local names per headline metric, first match wins. The non-bank names are verified
 # against a real NSE integrated-filing file, the bank names against HDFC Bank's FY27Q1
@@ -439,15 +448,56 @@ def build_rows(parsed: list[tuple[str, str, ParsedResult]], now: dt.datetime) ->
     return list(rows.values())
 
 
+def discontinued_quarters(results: pd.DataFrame) -> pd.DataFrame:
+    """Quarters reporting non-zero profit from discontinued operations.
+
+    Columns: symbol, basis, period_end (date), fiscal_quarter, amount (₹ crore, after tax
+    where stated). These mark breaks in comparability; see `changes`.
+    """
+    df = results[results["metric"].isin(DISCONTINUED_METRICS) & (results["value"] != 0)]
+    df = df.assign(period_end=pd.to_datetime(df["period_end"]).dt.date)
+    # prefer the after-tax figure: DISCONTINUED_METRICS is in preference order
+    df = df.assign(rank=df["metric"].map(DISCONTINUED_METRICS.index)).sort_values("rank")
+    df = df.drop_duplicates(["symbol", "basis", "period_end"])
+    return df[["symbol", "basis", "period_end", "fiscal_quarter", "value"]].rename(
+        columns={"value": "amount"}
+    )
+
+
+def _months_before(day: dt.date, months: int) -> dt.date:
+    """The quarter end `months` before `day`."""
+    return (pd.Timestamp(day) - pd.DateOffset(months=months) + pd.offsets.MonthEnd(0)).date()
+
+
+def _comparability_note(
+    breaks: pd.DataFrame, symbol: str, basis: str, prev_end: dt.date, end: dt.date
+) -> str:
+    """Why a comparison between quarters ending `prev_end` and `end` isn't like-for-like."""
+    hits = breaks[
+        (breaks["symbol"] == symbol)
+        & (breaks["basis"] == basis)
+        & (breaks["period_end"] > prev_end)
+        & (breaks["period_end"] <= end)
+    ]
+    return "; ".join(
+        f"not like-for-like: {b.fiscal_quarter} reports ₹{b.amount:,.0f} cr from discontinued "
+        "operations, and earlier quarters as filed include that business"
+        for b in hits.itertuples()
+    )
+
+
 def changes(results: pd.DataFrame) -> pd.DataFrame:
     """QoQ and YoY changes for headline metrics.
 
-    Columns: symbol, basis, metric, period_end, fiscal_quarter, value, prev_q, qoq, prev_y, yoy.
-    Changes are fractional ((v - prev) / |prev|); NaN when the comparison quarter is missing.
+    Columns: symbol, basis, metric, period_end, fiscal_quarter, value, prev_q, qoq, prev_y, yoy,
+    qoq_note, yoy_note. Changes are fractional ((v - prev) / |prev|); NaN when the
+    comparison quarter is missing. A note ("" if none) says when a comparison spans a
+    quarter with discontinued operations, so the two quarters cover different businesses.
     """
+    breaks = discontinued_quarters(results)
     df = results[results["metric"].isin(HEADLINE)].copy()
     if df.empty:
-        return df.assign(prev_q=[], qoq=[], prev_y=[], yoy=[])
+        return df.assign(prev_q=[], qoq=[], prev_y=[], yoy=[], qoq_note=[], yoy_note=[])
     df["period_end"] = pd.to_datetime(df["period_end"])
     key = ["symbol", "basis", "metric"]
     values = df.set_index([*key, "period_end"])["value"]
@@ -461,6 +511,15 @@ def changes(results: pd.DataFrame) -> pd.DataFrame:
     df["qoq"] = (df["value"] - df["prev_q"]) / df["prev_q"].abs()
     df["yoy"] = (df["value"] - df["prev_y"]) / df["prev_y"].abs()
     df["period_end"] = df["period_end"].dt.date
+    for col, prev, months in (("qoq_note", "prev_q", 3), ("yoy_note", "prev_y", 12)):
+        df[col] = [
+            ""
+            if pd.isna(getattr(r, prev))
+            else _comparability_note(
+                breaks, r.symbol, r.basis, _months_before(r.period_end, months), r.period_end
+            )
+            for r in df.itertuples()
+        ]
     return df.sort_values([*key, "period_end"]).reset_index(drop=True)
 
 
@@ -524,16 +583,28 @@ def rebuild(stocks: list[Stock]) -> list[dict]:
 # --- report ------------------------------------------------------------------------
 
 
+def joined_notes(diff: pd.DataFrame) -> str:
+    """The distinct QoQ/YoY comparability notes in `diff` rows, labelled by comparison."""
+    notes: dict[str, list[str]] = {}
+    for r in diff.itertuples():
+        for label, note in (("QoQ", r.qoq_note), ("YoY", r.yoy_note)):
+            if note and label not in notes.get(note, []):
+                notes.setdefault(note, []).append(label)
+    return "; ".join(f"{'/'.join(labels)} {note}" for note, labels in notes.items())
+
+
 def report(quarters: int = 8) -> pd.DataFrame:
     """Last `quarters` of revenue (or total income for banks) and net profit per stock.
 
     Consolidated where available, else standalone. Values in ₹ crore; '*' marks
-    lower-trust PDF values and '!' flagged ones.
+    lower-trust PDF values and '!' flagged ones. `note` says when QoQ/YoY comparisons
+    for that quarter aren't like-for-like (see `changes`).
     """
-    df = read_results()
-    df = df[df["metric"].isin(["revenue", "total_income", "net_profit"])]
+    all_rows = read_results()
+    df = all_rows[all_rows["metric"].isin(["revenue", "total_income", "net_profit"])]
     if df.empty:
         return df
+    diff = changes(all_rows)
     out = []
     for symbol, g in df.groupby("symbol"):
         basis = "consolidated" if (g["basis"] == "consolidated").any() else "standalone"
@@ -547,8 +618,11 @@ def report(quarters: int = 8) -> pd.DataFrame:
                     row[label] = "-"
                     continue
                 h = hit.iloc[0]
-                marks = ("*" if h["trust"] == "low" else "") + ("!" if h["flag"] else "")
+                marks = ("*" if h["trust"] == "low" else "") + ("!" if pd.notna(h["flag"]) else "")
                 row[label] = f"{h['value']:,.0f}{marks}"
+            d = diff[(diff["symbol"] == symbol) & (diff["basis"] == basis)
+                     & (diff["fiscal_quarter"] == fq) & (diff["metric"] == top_metric)]  # fmt: skip
+            row["note"] = joined_notes(d)
             out.append(row)
     table = pd.DataFrame(out).sort_values(["symbol", "period_end"])
     return table.groupby("symbol").tail(quarters).reset_index(drop=True)

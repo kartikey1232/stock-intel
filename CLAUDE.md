@@ -194,6 +194,12 @@ uv run streamlit run dashboard.py               # launch the dashboard
   (lost decimal), "3170830,09" (decimal comma). `repair_ocr_numbers` handles these. Some
   PDFs (Q4 FY26, Q1 FY25) have no text layer at all and are skipped; some links 404
   intermittently.
+- Results are as originally filed; XBRL carries no restated comparatives. When a quarter
+  reports discontinued operations (TMPV FY26Q2: the CV demerger, ₹82,616 cr gain), its top
+  line excludes that business but earlier quarters include it, so `results.changes` adds
+  `qoq_note`/`yoy_note` for comparisons that span it (shown in the dashboard and
+  `--report`). The demerger's accounting quarter (FY26Q2, to 30 Sep) is earlier than its
+  price ex-date (14 Oct), so detect it from the filings, not `corporate_actions.yaml`.
 - Per-share figures are as reported: HDFC Bank's pre-Aug-2025 EPS is on the pre-bonus
   share count and isn't restated.
 - Moneycontrol RSS is frozen (newest items 2024) and Business Standard RSS returns 403 to

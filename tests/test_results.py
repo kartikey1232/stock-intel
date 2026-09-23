@@ -326,6 +326,29 @@ def test_qoq_and_yoy_changes() -> None:
     assert pd.isna(diff.iloc[0]["qoq"])
 
 
+def test_changes_note_comparisons_across_discontinued_operations() -> None:
+    ends = [(2025, 3, 31), (2025, 6, 30), (2025, 9, 30), (2025, 12, 31), (2026, 3, 31)]
+    revenue = [120, 104, 72, 70, 105]  # the CV business leaves the top line in FY26Q2
+    triples = []
+    for i, (e, v) in enumerate(zip(ends, revenue, strict=True)):
+        p = parsed("xbrl", e, revenue=v)
+        p.values["x:ProfitLossFromDiscontinuedOperationsAfterTax"] = (
+            (82616.0, "INR crore") if e == (2025, 9, 30) else (0.0, "INR crore")
+        )  # zeros elsewhere, as in the real TMPV files
+        triples.append(("TMPV", f"f{i}", p))
+    diff = res.changes(pd.DataFrame(res.build_rows(triples, NOW))).set_index("fiscal_quarter")
+
+    assert diff.loc["FY26Q1", "qoq_note"] == ""  # both quarters before the break
+    assert "FY26Q2 reports ₹82,616 cr from discontinued" in diff.loc["FY26Q2", "qoq_note"]
+    assert diff.loc["FY26Q2", "yoy_note"] == ""  # no year-ago quarter, so nothing to note
+    assert diff.loc["FY26Q3", "qoq_note"] == ""  # both after the break
+    assert "FY26Q2" in diff.loc["FY26Q4", "yoy_note"]  # FY25Q4 still had the CV business
+    assert "QoQ/YoY" not in res.joined_notes(diff.loc[["FY26Q4"]].reset_index())
+    assert res.joined_notes(diff.loc[["FY26Q4"]].reset_index()).startswith("YoY not like")
+    twice = pd.concat([diff.loc[["FY26Q4"]]] * 2).reset_index()  # e.g. revenue + profit
+    assert res.joined_notes(twice).startswith("YoY not like")
+
+
 def test_validation_flags_5x_jumps_and_sign_changes() -> None:
     rows = res.validate(quarters("revenue", [100, 105, 1050, -1100, 120]))
     flags = {r["fiscal_quarter"]: r["flag"] for r in rows}
@@ -488,3 +511,12 @@ def test_stored_paths_are_project_relative_and_resolvable(tmp_path: Path) -> Non
     outside = tmp_path / "f.xml"
     assert db.to_project_relative(outside) == str(outside.resolve())
     assert db.project_path(str(outside)) == outside
+
+
+def test_report_marks_only_flagged_values(engine: Engine) -> None:
+    rows = res.validate(quarters("revenue", [100, 105, 1050, 1100, 1150]))
+    db.replace_results(rows)
+    table = res.report().set_index("quarter")
+    assert table.loc["FY25Q4", "revenue"] == "100"  # unflagged: no "!"
+    assert table.loc["FY26Q2", "revenue"] == "1,050!"  # 10x jump
+    assert table.loc["FY26Q2", "note"] == ""
