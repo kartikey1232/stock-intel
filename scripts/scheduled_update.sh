@@ -4,19 +4,52 @@
 # launchd starts jobs with a minimal environment: no login shell, PATH=/usr/bin:/bin:...,
 # working directory "/". So this script uses absolute paths, cds into the project, and
 # logs everything to logs/update-YYYY-MM-DD.log (IST date).
+#
+# On a non-zero exit it shows a macOS notification naming the failed steps and the log
+# file; on success it stays silent. (Phase 6 replaces this with Telegram alerts.)
+# UV and LOG_DIR can be overridden, e.g. to simulate a failure with a fake uv.
 
 set -u
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 UV="${UV:-$HOME/.local/bin/uv}"
-LOG_DIR="$PROJECT_DIR/logs"
+LOG_DIR="${LOG_DIR:-$PROJECT_DIR/logs}"
 LOG_FILE="$LOG_DIR/update-$(TZ=Asia/Kolkata date +%F).log"
 KEEP_DAYS=60
+FAILURES_FILE="$(mktemp -t stockintel-failures)"
 
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 
 mkdir -p "$LOG_DIR"
 exec >>"$LOG_FILE" 2>&1
+
+# Show a notification for a failed run: $1 = exit code. Text is passed as osascript
+# arguments, so quotes in step names need no escaping.
+notify_failure() {
+    local status="$1" failed summary
+    failed="$(paste -sd ',' "$FAILURES_FILE" 2>/dev/null | sed 's/,/, /g')"
+    if [ -n "$failed" ]; then
+        summary="Failed: $failed"
+    else
+        summary="Exit code $status before the pipeline finished"
+    fi
+    [ "${#summary}" -gt 180 ] && summary="${summary:0:177}..."
+    /usr/bin/osascript \
+        -e 'on run argv' \
+        -e 'display notification (item 1 of argv) with title "stock-intel update failed" subtitle (item 2 of argv)' \
+        -e 'end run' \
+        "$summary" "Log: ${LOG_FILE#"$PROJECT_DIR"/}" \
+        || echo "WARNING: could not show the failure notification"
+}
+
+on_exit() {
+    local status=$?
+    if [ "$status" -ne 0 ]; then
+        notify_failure "$status"
+    fi
+    rm -f "$FAILURES_FILE"
+}
+trap on_exit EXIT
 
 echo "=== $(TZ=Asia/Kolkata date '+%F %T %Z') scheduled update starting (pid $$) ==="
 
@@ -38,7 +71,7 @@ for attempt in $(seq 1 30); do
     sleep 10
 done
 
-"$UV" run python run_update.py
+"$UV" run python run_update.py --failures-file "$FAILURES_FILE"
 status=$?
 echo "=== $(TZ=Asia/Kolkata date '+%F %T %Z') scheduled update finished with exit code $status ==="
 

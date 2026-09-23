@@ -1,0 +1,27 @@
+# NSE equity trading holidays that fall on weekdays. Used to work out which trading day
+# every watchlist stock must have a bar for after an update (see config/market_calendar.py).
+#
+# Source: NSE's annual holiday circular, read by hand. (Principle 7: no automated access to
+# NSE.) Add each new year's list in December. A holiday missing from this file only causes
+# a false "missing bar" failure on that day; it never hides a real one.
+#
+# 2026 dates up to 14 Sep match the weekdays with no bars in stored Yahoo prices. The dates
+# after that are unverified: check them against the circular.
+
+holidays:
+  - 2026-01-15  # Municipal Corporation elections, Maharashtra
+  - 2026-01-26  # Republic Day
+  - 2026-03-03  # Holi
+  - 2026-03-26  # Shri Ram Navami
+  - 2026-03-31  # Shri Mahavir Jayanti
+  - 2026-04-03  # Good Friday
+  - 2026-04-14  # Dr. Baba Saheb Ambedkar Jayanti
+  - 2026-05-01  # Maharashtra Day
+  - 2026-05-28  # Bakri Id
+  - 2026-06-26  # Muharram
+  - 2026-09-14  # Ganesh Chaturthi
+  - 2026-10-02  # Mahatma Gandhi Jayanti (unverified)
+  - 2026-10-20  # Dussehra (unverified)
+  - 2026-11-10  # Diwali Balipratipada (unverified)
+  - 2026-11-24  # Prakash Gurpurb Sri Guru Nanak Dev (unverified)
+  - 2026-12-25  # Christmas (unverified)

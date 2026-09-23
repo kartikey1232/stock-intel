@@ -130,6 +130,10 @@ scripts/install_schedule.sh --remove   # disable and remove
 ```
 
 - Each run logs to `logs/update-YYYY-MM-DD.log`; logs older than 60 days are deleted.
+- If anything fails, a macOS notification names the failed steps and the log file.
+  Successful runs are silent. Failures include Yahoo rate limits, empty Yahoo responses,
+  and any stock missing a bar for the latest completed trading day. Trading days come
+  from `config/market_holidays.yaml`: add NSE's holiday list for each new year.
 - It runs as you, without a terminal open, while you're logged in (a locked screen is
   fine). It doesn't run while you're logged out.
 - If the Mac is asleep at 16:15, the run happens as soon as it wakes; several missed days

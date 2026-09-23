@@ -4,6 +4,13 @@ First run for a symbol fetches HISTORY_YEARS of history; later runs fetch from t
 stored date onward (re-fetching that date, since it may have been a partial intraday bar).
 Rows are upserted, so re-running is always safe.
 
+Failures are explicit, never "no new data":
+- A Yahoo rate limit (HTTP 429) is retried once after a long pause; if it persists, the
+  remaining symbols are skipped (not requested) and all count as failed.
+- An empty response is a failure, because every request covers at least one date that
+  has a bar (the last stored date, or five years of history).
+- `missing_session_bars` lists stocks without a bar for the latest completed session.
+
 Run with:  uv run python -m collectors.prices
 """
 
@@ -17,8 +24,10 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 import yfinance as yf
+from yfinance.exceptions import YFRateLimitError
 
 from config.loader import Stock, load_watchlist
+from config.market_calendar import latest_completed_session, load_holidays
 from storage.db import count_prices, init_db, latest_price_date, upsert_prices
 from utils import setup_logging
 from utils.retry import retry
@@ -29,7 +38,7 @@ IST = ZoneInfo("Asia/Kolkata")
 HISTORY_YEARS = 5
 REQUEST_TIMEOUT_S = 20
 PAUSE_BETWEEN_TICKERS_S = (1.0, 2.0)
-STALE_AFTER_DAYS = 7  # warn if an incremental fetch returns nothing and data is this old
+RATE_LIMIT_PAUSE_S = 90.0  # wait this long before the one retry after a Yahoo 429
 
 COLUMN_MAP = {
     "Open": "open",
@@ -65,20 +74,33 @@ def fetch_start_date(last_stored: dt.date | None, today: dt.date) -> dt.date:
     return last_stored
 
 
-@retry(attempts=3, base_delay=2.0)
+@retry(
+    attempts=2,
+    base_delay=RATE_LIMIT_PAUSE_S,
+    max_delay=RATE_LIMIT_PAUSE_S,
+    exceptions=(YFRateLimitError,),
+)
+@retry(attempts=3, base_delay=2.0, give_up_on=(YFRateLimitError,))
 def download_ohlcv(ticker: str, start: dt.date, end: dt.date) -> pd.DataFrame:
-    """Download raw daily bars for [start, end] from Yahoo (retried on failure)."""
-    return yf.download(
-        ticker,
-        start=start.isoformat(),
-        end=(end + dt.timedelta(days=1)).isoformat(),  # yfinance's end is exclusive
-        interval="1d",
-        auto_adjust=False,
-        actions=False,
-        progress=False,
-        threads=False,
-        timeout=REQUEST_TIMEOUT_S,
-    )
+    """Download raw daily bars for [start, end] from Yahoo (retried on failure).
+
+    Uses Ticker.history rather than yf.download: yf.download catches every per-ticker
+    error, rate limits included, and returns an empty frame. With `hide_exceptions`
+    off, history raises YFRateLimitError, YFPricesMissingError, network errors, etc.
+    """
+    previous = yf.config.debug.hide_exceptions
+    yf.config.debug.hide_exceptions = False
+    try:
+        return yf.Ticker(ticker).history(
+            start=start.isoformat(),
+            end=(end + dt.timedelta(days=1)).isoformat(),  # yfinance's end is exclusive
+            interval="1d",
+            auto_adjust=False,
+            actions=False,
+            timeout=REQUEST_TIMEOUT_S,
+        )
+    finally:
+        yf.config.debug.hide_exceptions = previous
 
 
 def normalise_ohlcv(raw: pd.DataFrame, symbol: str) -> pd.DataFrame:
@@ -140,15 +162,9 @@ def collect_symbol(stock: Stock, today: dt.date) -> int:
     if df.empty:
         if last_stored is None:
             raise NoDataError(f"no data returned for {stock.yf}; check the ticker")
-        if (today - last_stored).days > STALE_AFTER_DAYS:
-            logger.warning(
-                "%s: no new rows and last stored date is %s; ticker may be delisted or renamed",
-                stock.symbol,
-                last_stored,
-            )
-        else:
-            logger.info("%s: no new rows (market closed or already up to date)", stock.symbol)
-        return 0
+        # The range starts at a date we already have a bar for, so empty means Yahoo
+        # failed (throttling, outage), not "nothing new".
+        raise NoDataError(f"no bars returned for {stock.yf} from {start}, which has a bar")
 
     written = upsert_prices(df)
     new_rows = int((df["date"].dt.date > last_stored).sum()) if last_stored else written
@@ -164,7 +180,11 @@ def collect_symbol(stock: Stock, today: dt.date) -> int:
 
 
 def collect_all(stocks: list[Stock]) -> RunSummary:
-    """Collect prices for every stock; one failure never stops the others."""
+    """Collect prices for every stock; one failure never stops the others.
+
+    The exception is a persistent Yahoo rate limit: the remaining stocks are then marked
+    failed without being requested, because more requests only prolong the block.
+    """
     summary = RunSummary()
     today = today_ist()
     for i, stock in enumerate(stocks):
@@ -172,10 +192,38 @@ def collect_all(stocks: list[Stock]) -> RunSummary:
             time.sleep(random.uniform(*PAUSE_BETWEEN_TICKERS_S))
         try:
             summary.rows_written[stock.symbol] = collect_symbol(stock, today)
+        except YFRateLimitError:
+            logger.error("%s: rate limited by Yahoo; skipping the remaining stocks", stock.symbol)
+            summary.failures[stock.symbol] = "rate limited by Yahoo"
+            for skipped in stocks[i + 1 :]:
+                summary.failures[skipped.symbol] = "skipped: Yahoo rate limit"
+            break
         except Exception as exc:
             logger.exception("%s: collection failed", stock.symbol)
             summary.failures[stock.symbol] = f"{type(exc).__name__}: {exc}"
     return summary
+
+
+def missing_session_bars(stocks: list[Stock], now: dt.datetime | None = None) -> dict[str, str]:
+    """Stocks without a stored bar for the latest completed trading session.
+
+    Returns {symbol: reason}. Before 15:30 IST the session checked is the previous
+    trading day, so this can run at any time.
+    """
+    now = now or dt.datetime.now(IST)
+    session = latest_completed_session(now, load_holidays())
+    missing = {}
+    for stock in stocks:
+        last = latest_price_date(stock.symbol)
+        if last is None or last < session:
+            missing[stock.symbol] = f"no bar for {session} (latest stored: {last or 'none'})"
+    if missing:
+        logger.error(
+            "%d stock(s) missing the %s bar: %s", len(missing), session, ", ".join(missing)
+        )
+    else:
+        logger.info("All %d stocks have a bar for %s", len(stocks), session)
+    return missing
 
 
 def log_summary(summary: RunSummary) -> None:
@@ -197,9 +245,11 @@ def main() -> int:
     """Entry point: collect prices for the whole watchlist. Exit code 1 if any failed."""
     setup_logging()
     init_db()
-    summary = collect_all(load_watchlist())
+    stocks = load_watchlist()
+    summary = collect_all(stocks)
     log_summary(summary)
-    return 1 if summary.failures else 0
+    missing = missing_session_bars(stocks)
+    return 1 if summary.failures or missing else 0
 
 
 if __name__ == "__main__":

@@ -18,12 +18,14 @@ def retry(
     base_delay: float = 2.0,
     max_delay: float = 30.0,
     exceptions: tuple[type[BaseException], ...] = (Exception,),
+    give_up_on: tuple[type[BaseException], ...] = (),
     sleep: Callable[[float], None] | None = None,
 ) -> Callable[[Callable[P, R]], Callable[P, R]]:
     """Retry the decorated function on `exceptions` with exponential backoff and jitter.
 
     Delay before retry n (1-based) is min(max_delay, base_delay * 2**(n-1)) plus up to
     25% random jitter. The last exception is re-raised once all attempts are used.
+    Exceptions in `give_up_on` are re-raised immediately, even if they match `exceptions`.
     `sleep` defaults to time.sleep, looked up at call time so tests can patch it.
     """
 
@@ -34,7 +36,7 @@ def retry(
                 try:
                     return func(*args, **kwargs)
                 except exceptions as exc:
-                    if attempt == attempts:
+                    if attempt == attempts or isinstance(exc, give_up_on):
                         raise
                     delay = min(max_delay, base_delay * 2 ** (attempt - 1))
                     delay += random.uniform(0, delay * 0.25)

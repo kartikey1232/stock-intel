@@ -24,6 +24,7 @@ def fake_steps(
     changed_actions=None,
     failing_news: dict[str, Exception] | None = None,
     failing_filings: dict[str, Exception] | None = None,
+    missing_bars: dict[str, str] | None = None,
 ) -> None:
     def collect_all(stocks):
         calls.append("prices")
@@ -46,6 +47,7 @@ def fake_steps(
     monkeypatch.setattr(run_update, "sync_actions_from_config", lambda: changed_actions or set())
     monkeypatch.setattr(run_update, "collect_all", collect_all)
     monkeypatch.setattr(run_update, "process_all", process_all)
+    monkeypatch.setattr(run_update, "missing_session_bars", lambda stocks: missing_bars or {})
     monkeypatch.setattr(run_update, "news_steps", lambda stocks: [(n, step(n)) for n in NEWS])
     monkeypatch.setattr(run_update, "filings_steps", lambda stocks: [(n, step(n)) for n in FILINGS])
 
@@ -75,6 +77,43 @@ def test_indicators_and_news_still_run_after_price_failure(monkeypatch, calls) -
     fake_steps(monkeypatch, calls, price_failures={"INFY": "ConnectionError"})
     assert run_update.run() == 1
     assert calls == ["prices", "indicators(full=False, force_full=[])", *NEWS, *FILINGS]
+
+
+def test_missing_bar_is_a_failure(monkeypatch, calls, tmp_path) -> None:
+    fake_steps(
+        monkeypatch,
+        calls,
+        price_failures={"INFY": "YFRateLimitError"},
+        missing_bars={"INFY": "no bar", "TCS": "no bar"},
+    )
+    failures_file = tmp_path / "failures.txt"
+    assert run_update.run(skip_news=True, failures_file=failures_file) == 1
+    # INFY is reported once, as a price failure; its missing bar is a consequence.
+    assert failures_file.read_text().splitlines() == ["prices: INFY", "missing bar: TCS"]
+
+
+def test_failures_file_is_empty_on_success(calls, tmp_path) -> None:
+    failures_file = tmp_path / "failures.txt"
+    failures_file.write_text("stale\n")
+    assert run_update.run(failures_file=failures_file) == 0
+    assert failures_file.read_text() == ""
+
+
+def test_failures_file_names_every_failed_step(monkeypatch, calls, tmp_path) -> None:
+    fake_steps(
+        monkeypatch,
+        calls,
+        indicator_failures={"TCS": "KeyError"},
+        failing_news={"sentiment": RuntimeError("x")},
+        failing_filings={"results extraction": RuntimeError("y")},
+    )
+    failures_file = tmp_path / "failures.txt"
+    assert run_update.run(failures_file=failures_file) == 1
+    assert failures_file.read_text().splitlines() == [
+        "indicators: TCS",
+        "news: sentiment",
+        "filings: results extraction",
+    ]
 
 
 def test_indicator_failure_sets_exit_code(monkeypatch, calls) -> None:
@@ -121,7 +160,12 @@ def test_cli_parses_skip_news(monkeypatch) -> None:
     monkeypatch.setattr(run_update, "setup_logging", lambda: None)
     monkeypatch.setattr(run_update, "run", lambda **kw: seen.update(kw) or 0)
     assert run_update.main(["--skip-news"]) == 0
-    assert seen == {"full_indicators": False, "skip_news": True, "skip_filings": False}
+    assert seen == {
+        "full_indicators": False,
+        "skip_news": True,
+        "skip_filings": False,
+        "failures_file": None,
+    }
     assert run_update.main(["--skip-filings"]) == 0
     assert seen["skip_filings"] is True
 

@@ -28,7 +28,7 @@ uv add <pkg>               # add a dependency (never edit pyproject by hand for 
 uv run pytest              # run all tests
 uv run pytest path/to/test_file.py::test_name   # run a single test
 uv run ruff check . && uv run ruff format .     # lint + format
-uv run python run_update.py [--skip-news] [--skip-filings]  # prices -> indicators -> news -> filings
+uv run python run_update.py [--skip-news] [--skip-filings] [--failures-file PATH]  # prices -> indicators -> news -> filings
 uv run python -m collectors.prices              # prices only
 uv run python -m processing.indicators [--full] # indicators only
 uv run python -m collectors.news                # news articles (Google News + publisher RSS)
@@ -47,8 +47,18 @@ uv run streamlit run dashboard.py               # launch the dashboard
 
 ## Gotchas
 
-- yfinance never raises on failure; it returns an empty frame. Collectors must decide
-  what "empty" means (first run = error, incremental = no new data).
+- `yf.download` never raises: it catches every per-ticker error, rate limits (HTTP 429)
+  included, and returns an empty frame. The price collector therefore uses
+  `Ticker.history` with `yf.config.debug.hide_exceptions = False`, which raises
+  `YFRateLimitError`, `YFPricesMissingError`, HTTP errors, etc. (checked on yfinance 1.7).
+  A rate limit gets one retry after 90 s; if it persists, the remaining stocks are skipped
+  and fail. An empty response is always a failure, because every request starts at a date
+  that has a bar.
+- After prices, every stock must have a bar for the latest completed session (15:30 IST
+  on a trading day, else the previous trading day). Trading days = weekdays minus
+  `config/market_holidays.yaml`, maintained by hand from NSE's holiday circular (never
+  fetched: principle 7). Add next year's list each December; an unlisted holiday only
+  causes a false failure that day.
 - Yahoo inserts filler bars on NSE holidays (zero volume, flat OHLC); the price collector
   drops them.
 - Corporate actions: `prices` stays raw forever; adjustment happens in
@@ -134,7 +144,10 @@ uv run streamlit run dashboard.py               # launch the dashboard
   that runs `scripts/scheduled_update.sh`. launchd gives jobs a minimal environment, so the
   wrapper uses absolute paths (uv in ~/.local/bin), cds to the project, waits up to 5 min
   for the network after wake, and logs to `logs/update-YYYY-MM-DD.log`. Re-run the
-  installer after moving the project, because the plist stores absolute paths.
+  installer after moving the project, because the plist stores absolute paths. On a
+  non-zero exit it shows a macOS notification (osascript) listing the failed steps, which
+  run_update.py writes to `--failures-file`; success is silent. Simulate a failure with
+  `UV=<fake uv script> LOG_DIR=<tmp dir> scripts/scheduled_update.sh`.
 - File paths stored in the database (`filings.attachment_path`) are project-relative;
   resolve them with `storage.db.project_path()` and store them with
   `to_project_relative()`. Never store absolute paths: the project lives in

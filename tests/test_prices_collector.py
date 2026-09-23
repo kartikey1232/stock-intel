@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 import pytest
 from sqlalchemy import Engine
+from yfinance.exceptions import YFRateLimitError
 
 import collectors.prices as prices
 from config.loader import Stock
@@ -142,13 +143,96 @@ def test_rerun_is_incremental_and_idempotent(engine: Engine, monkeypatch) -> Non
     assert db.count_prices() == {"INFY": 2}
 
 
-def test_empty_incremental_run_is_not_a_failure(engine: Engine, monkeypatch) -> None:
+def test_empty_incremental_run_is_a_failure(engine: Engine, monkeypatch) -> None:
     monkeypatch.setattr(prices, "download_ohlcv", lambda t, s, e: yahoo_frame(t, ["2026-09-18"]))
     prices.collect_all([stock("INFY")])
     monkeypatch.setattr(prices, "download_ohlcv", lambda *a: pd.DataFrame())
     summary = prices.collect_all([stock("INFY")])
-    assert summary.rows_written == {"INFY": 0}
-    assert not summary.failures
+    # The request starts at 2026-09-18, which has a bar, so empty means Yahoo failed.
+    assert "NoDataError" in summary.failures["INFY"]
+
+
+def test_rate_limit_skips_remaining_stocks(engine: Engine, monkeypatch) -> None:
+    requested: list[str] = []
+
+    def fake_download(ticker: str, start: dt.date, end: dt.date) -> pd.DataFrame:
+        requested.append(ticker)
+        if ticker == "TCS.NS":
+            raise YFRateLimitError()
+        return yahoo_frame(ticker, ["2026-09-22"])
+
+    monkeypatch.setattr(prices, "download_ohlcv", fake_download)
+    summary = prices.collect_all([stock("INFY"), stock("TCS"), stock("RELIANCE")])
+
+    assert requested == ["INFY.NS", "TCS.NS"]  # RELIANCE was never requested
+    assert summary.rows_written == {"INFY": 1}
+    assert summary.failures == {
+        "TCS": "rate limited by Yahoo",
+        "RELIANCE": "skipped: Yahoo rate limit",
+    }
+
+
+class FakeTicker:
+    """Stands in for yf.Ticker; records whether yfinance exceptions were un-hidden."""
+
+    def __init__(self, error: Exception | None, seen: list[bool]) -> None:
+        self.error = error
+        self.seen = seen
+
+    def history(self, **kwargs) -> pd.DataFrame:
+        self.seen.append(prices.yf.config.debug.hide_exceptions)
+        if self.error:
+            raise self.error
+        return yahoo_frame("X.NS", ["2026-09-22"]).droplevel(1, axis=1)
+
+
+def test_download_surfaces_yfinance_errors(monkeypatch) -> None:
+    seen: list[bool] = []
+    errors = iter([ConnectionError("reset"), None])
+    monkeypatch.setattr(prices.yf, "Ticker", lambda t: FakeTicker(next(errors), seen))
+    monkeypatch.setattr(prices.time, "sleep", lambda _s: None)
+
+    df = prices.download_ohlcv("X.NS", TODAY, TODAY)
+
+    assert len(df) == 1
+    assert seen == [False, False]  # exceptions un-hidden during both attempts
+    assert prices.yf.config.debug.hide_exceptions is True  # and restored afterwards
+
+
+def test_rate_limit_gets_one_long_retry(monkeypatch) -> None:
+    seen: list[bool] = []
+    delays: list[float] = []
+    monkeypatch.setattr(prices.yf, "Ticker", lambda t: FakeTicker(YFRateLimitError(), seen))
+    monkeypatch.setattr(prices.time, "sleep", delays.append)
+
+    with pytest.raises(YFRateLimitError):
+        prices.download_ohlcv("X.NS", TODAY, TODAY)
+
+    assert len(seen) == 2  # not retried by the short-backoff layer
+    assert len(delays) == 1 and delays[0] >= prices.RATE_LIMIT_PAUSE_S
+
+
+# --- missing_session_bars ----------------------------------------------------------
+
+
+def test_missing_session_bars(engine: Engine, monkeypatch) -> None:
+    monkeypatch.setattr(prices, "download_ohlcv", lambda t, s, e: yahoo_frame(t, ["2026-09-22"]))
+    prices.collect_all([stock("INFY")])
+    monkeypatch.setattr(
+        prices, "download_ohlcv", lambda t, s, e: yahoo_frame(t, ["2026-09-22", "2026-09-23"])
+    )
+    prices.collect_all([stock("TCS")])
+    stocks = [stock("INFY"), stock("TCS"), stock("NEW")]
+
+    after_close = dt.datetime(2026, 9, 23, 16, 15, tzinfo=prices.IST)
+    missing = prices.missing_session_bars(stocks, after_close)
+    assert missing == {
+        "INFY": "no bar for 2026-09-23 (latest stored: 2026-09-22)",
+        "NEW": "no bar for 2026-09-23 (latest stored: none)",
+    }
+
+    before_close = dt.datetime(2026, 9, 23, 11, 0, tzinfo=prices.IST)
+    assert set(prices.missing_session_bars(stocks, before_close)) == {"NEW"}
 
 
 # --- retry -------------------------------------------------------------------------
@@ -177,3 +261,16 @@ def test_retry_reraises_after_last_attempt() -> None:
 
     with pytest.raises(TimeoutError):
         always_fails()
+
+
+def test_retry_gives_up_immediately_on_listed_exceptions() -> None:
+    calls: list[int] = []
+
+    @retry(attempts=3, base_delay=0, give_up_on=(PermissionError,), sleep=lambda _s: None)
+    def denied() -> None:
+        calls.append(1)
+        raise PermissionError("no")
+
+    with pytest.raises(PermissionError):
+        denied()
+    assert len(calls) == 1
