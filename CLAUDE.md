@@ -28,7 +28,7 @@ uv add <pkg>               # add a dependency (never edit pyproject by hand for 
 uv run pytest              # run all tests
 uv run pytest path/to/test_file.py::test_name   # run a single test
 uv run ruff check . && uv run ruff format .     # lint + format
-uv run python run_update.py [--skip-news]       # prices -> indicators -> news pipeline
+uv run python run_update.py [--skip-news] [--skip-filings]  # prices -> indicators -> news -> filings
 uv run python -m collectors.prices              # prices only
 uv run python -m processing.indicators [--full] # indicators only
 uv run python -m collectors.news                # news articles (Google News + publisher RSS)
@@ -37,6 +37,11 @@ uv run python -m processing.stories [--full]    # group syndicated copies into s
 uv run python -m processing.entities [--full]   # link articles to watchlist stocks
 uv run python -m processing.entities --evaluate # precision/recall on labelled headlines
 uv run python -m processing.sentiment [--report] # FinBERT scores + news_daily aggregates
+uv run python -m processing.filing_categories   # categorise filings, detect corporate actions
+uv run python -m collectors.result_files import     # import results files from data/filings/inbox/
+uv run python -m collectors.result_files checklist  # which quarters x bases are missing, and where from
+uv run python -m collectors.results_ir          # HDFC Bank results PDFs from its IR site
+uv run python -m processing.results --report    # rebuild results table; last 8 quarters
 uv run streamlit run dashboard.py               # launch the dashboard
 ```
 
@@ -117,17 +122,52 @@ uv run streamlit run dashboard.py               # launch the dashboard
 - FinBERT scores the tone of the text, not the tone for our stock: "X wins order from
   Reliance" scores positive for RELIANCE.
 - `run_update.py` runs prices, then indicators, then the news steps (collect -> text ->
-  stories -> entities -> sentiment -> news_daily). Every step is isolated: a failure is
-  logged and recorded, later steps still run, and the exit code is 1. News modules are
-  imported lazily inside `news_steps()`, so a broken news dependency (e.g. torch) can't
-  stop price updates. Keep it that way: don't import news or torch modules at the top of
-  run_update.py.
+  stories -> entities -> sentiment -> news_daily), then the filings steps (HDFC Bank IR
+  PDFs -> results inbox import -> filing classification -> results rebuild). Every step is
+  isolated through `run_steps`: a failure is logged and recorded, later steps still run,
+  and the exit code is 1. Raise `StepError` for "finished, but partly failed". News and
+  filings modules are imported lazily inside `news_steps()`/`filings_steps()`, so a broken
+  dependency (e.g. torch, pdfplumber) can't stop price updates. Keep it that way: don't
+  import them at the top of run_update.py.
+- Results filings keep `filing_type = "results"` through classification (a test checks
+  this), because `results.rebuild` selects files by that type.
+- A results file's `filed_at` is the board-approval date stated in the file (XBRL field, or
+  "results … approved by the Board … held on <date>" in PDFs). When the file doesn't state
+  one, it's the quarter end + 45 days and the subject says "[date approx.]"; the
+  dashboard labels those markers "(date approx.)". `results.rebuild` refreshes these
+  fields for already-stored files.
 - Dashboard news: the news list collapses copies into one row per story (earliest copy
   shown, "+N more sources" = other outlets in the story_id). The sentiment card and panel
   read `news_daily`, so they only change after an update rebuilds it. Headlines go
   through `escape_markdown` because Streamlit treats `$` as LaTeX.
 - Article text is stored for personal analysis only (see README "Data use"). Never add
   features that publish or share stored article text.
+- Filings: there is no filings collector yet. NSE's Terms of Use prohibit automated
+  collection; BSE's API needs a browser session and its terms forbid reproduction without
+  written consent. The source is undecided (see the Phase 3 investigation). Don't build
+  NSE/BSE scraping without an explicit decision. The `filings` table and
+  `processing/filing_categories.py` are source-agnostic.
+- Filing categories: a board meeting "to consider" X is a board_meeting, never an action.
+  Corporate actions found in filings go to `pending_actions` with a status; the code must
+  never write `config/corporate_actions.yaml` (there's a test for this). Because Yahoo
+  usually adjusts splits and bonuses, "yahoo_adjusted" (no ex-date gap in raw prices) means
+  don't add it; "needs_review" means the gap is real and it probably belongs in the YAML.
+- Results come from files, never from scraping exchanges: XBRL the user downloads into
+  `data/filings/inbox/` (identified by content, any filename), plus HDFC Bank results PDFs
+  from its IR site (the only IR site whose results are statically linked and robots-allowed;
+  Infosys/TCS block bots, TMPV lists results via a private JS API). XBRL always beats PDF
+  for the same (symbol, quarter, basis); PDF rows are trust=low. The `results` table is
+  rebuilt from stored files on every run.
+- XBRL: elements are matched by local name (prefixes differ between taxonomies). Values are
+  absolute INR, divided by 1e7 for crore. Q4 filings also contain full-year contexts, so
+  the parser only accepts ~3-month contexts. Bank XBRL tag names in `XBRL_TAGS` are
+  UNVERIFIED until a real HDFC Bank XBRL is imported.
+- HDFC Bank's PDFs are scanned images with an OCR text layer: expect "eamed", "18187 49"
+  (lost decimal), "3170830,09" (decimal comma). `repair_ocr_numbers` handles these. Some
+  PDFs (Q4 FY26, Q1 FY25) have no text layer at all and are skipped; some links 404
+  intermittently.
+- Per-share figures are as reported: HDFC Bank's pre-Aug-2025 EPS is on the pre-bonus
+  share count and isn't restated.
 - Moneycontrol RSS is frozen (newest items 2024) and Business Standard RSS returns 403 to
   non-browser clients; both are excluded from `config/news_sources.yaml`. Don't spoof a
   browser User-Agent to get around blocks.

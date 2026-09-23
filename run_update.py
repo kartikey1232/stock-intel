@@ -1,20 +1,24 @@
-"""Daily update: prices and indicators, then the news pipeline, for the whole watchlist.
+"""Daily update: prices, indicators, news and filings for the whole watchlist.
 
 Steps:
   1. prices       collect daily OHLCV (collectors.prices)
   2. indicators   sync corporate actions, compute indicators (processing.indicators)
   3. news         collect articles -> article text -> story grouping -> entity linking
                   -> sentiment -> daily aggregates (skip with --skip-news)
+  4. filings      HDFC Bank results PDFs from its IR site -> import the results inbox
+                  (data/filings/inbox/) -> classify filings -> extract results
+                  (skip with --skip-filings). There is no exchange filings collector:
+                  NSE/BSE access is undecided (see README).
 
 Corporate actions are synced from config/corporate_actions.yaml before indicators are
 computed; symbols whose actions changed get a full indicator recompute.
 
 Every step runs even if an earlier one failed: indicators run for symbols whose price
 download failed (they keep their previous data), and news runs after price problems.
-Each news step is isolated the same way, so a failing feed or model never blocks the
-rest. Exit code is 0 on full success, 1 if anything failed.
+Each news and filings step is isolated the same way, so a failing feed, file or model
+never blocks the rest. Exit code is 0 on full success, 1 if anything failed.
 
-Run with:  uv run python run_update.py [--full-indicators] [--skip-news]
+Run with:  uv run python run_update.py [--full-indicators] [--skip-news] [--skip-filings]
 """
 
 import argparse
@@ -33,8 +37,8 @@ from utils import setup_logging
 logger = logging.getLogger("run_update")
 
 
-class NewsStepError(RuntimeError):
-    """A news step finished but reported failures (e.g. some feeds failed)."""
+class StepError(RuntimeError):
+    """A pipeline step finished but reported failures (e.g. some feeds or files failed)."""
 
 
 def news_steps(stocks: list[Stock]) -> list[tuple[str, Callable[[], None]]]:
@@ -51,7 +55,7 @@ def news_steps(stocks: list[Stock]) -> list[tuple[str, Callable[[], None]]]:
         news.log_summary(results)
         failed = [r.name for r in results if r.error]
         if failed:
-            raise NewsStepError(f"{len(failed)} source(s) failed: {', '.join(failed)}")
+            raise StepError(f"{len(failed)} source(s) failed: {', '.join(failed)}")
 
     def score() -> None:
         scorer = sentiment.FinbertScorer(
@@ -69,20 +73,53 @@ def news_steps(stocks: list[Stock]) -> list[tuple[str, Callable[[], None]]]:
     ]
 
 
-def run_news(stocks: list[Stock]) -> list[str]:
-    """Run every news step, isolating failures. Returns the names of failed steps."""
+def filings_steps(stocks: list[Stock]) -> list[tuple[str, Callable[[], None]]]:
+    """The filings pipeline as (name, step) pairs, run in order (lazy imports, as for news)."""
+    from collectors import result_files, results_ir
+    from processing import filing_categories, results
+
+    def ir_pdfs() -> None:
+        failures = results_ir.collect_all(stocks)
+        if failures:
+            raise StepError(f"IR collection failed for {', '.join(failures)}")
+
+    def inbox() -> None:
+        outcomes = result_files.import_inbox(stocks)
+        for o in outcomes:
+            (logger.warning if o.status == "rejected" else logger.info)(
+                "inbox %s %s: %s", o.status, o.name, o.detail
+            )
+        rejected = [o.name for o in outcomes if o.status == "rejected"]
+        if rejected:
+            raise StepError(
+                f"{len(rejected)} inbox file(s) rejected (see data/filings/inbox/rejected/): "
+                + ", ".join(rejected)
+            )
+
+    return [
+        ("IR results PDFs", ir_pdfs),
+        ("results inbox import", inbox),
+        ("filing classification", lambda: filing_categories.run()),
+        ("results extraction", lambda: results.rebuild(stocks)),
+    ]
+
+
+def run_steps(
+    label: str, make_steps: Callable[[], list[tuple[str, Callable[[], None]]]]
+) -> list[str]:
+    """Run a pipeline's steps, isolating failures. Returns the names of failed steps."""
     try:
-        steps = news_steps(stocks)
+        steps = make_steps()
     except Exception:
-        logger.exception("Could not set up the news pipeline")
-        return ["news setup"]
+        logger.exception("Could not set up the %s pipeline", label)
+        return [f"{label} setup"]
     failed = []
     for i, (name, step) in enumerate(steps, 1):
-        logger.info("News %d/%d: %s", i, len(steps), name)
+        logger.info("%s %d/%d: %s", label.capitalize(), i, len(steps), name)
         try:
             step()
         except Exception as exc:
-            if isinstance(exc, NewsStepError):
+            if isinstance(exc, StepError):
                 logger.error("%s: %s", name, exc)
             else:
                 logger.exception("%s failed", name)
@@ -90,17 +127,27 @@ def run_news(stocks: list[Stock]) -> list[str]:
     return failed
 
 
-def run(full_indicators: bool = False, skip_news: bool = False) -> int:
+def run_news(stocks: list[Stock]) -> list[str]:
+    """Run every news step, isolating failures. Returns the names of failed steps."""
+    return run_steps("news", lambda: news_steps(stocks))
+
+
+def run_filings(stocks: list[Stock]) -> list[str]:
+    """Run every filings step, isolating failures. Returns the names of failed steps."""
+    return run_steps("filings", lambda: filings_steps(stocks))
+
+
+def run(full_indicators: bool = False, skip_news: bool = False, skip_filings: bool = False) -> int:
     """Run the full update pipeline and return a process exit code."""
     started = time.monotonic()
     init_db()
     stocks = load_watchlist()
 
-    logger.info("Step 1/3: collecting prices for %d stock(s)", len(stocks))
+    logger.info("Step 1/4: collecting prices for %d stock(s)", len(stocks))
     price_summary = collect_all(stocks)
     log_summary(price_summary)
 
-    logger.info("Step 2/3: computing indicators%s", " (full recompute)" if full_indicators else "")
+    logger.info("Step 2/4: computing indicators%s", " (full recompute)" if full_indicators else "")
     changed_actions = sync_actions_from_config()
     indicator_failures = process_all(
         [s.symbol for s in stocks], full=full_indicators, force_full=changed_actions
@@ -108,13 +155,21 @@ def run(full_indicators: bool = False, skip_news: bool = False) -> int:
 
     news_failures: list[str] = []
     if skip_news:
-        logger.info("Step 3/3: news skipped (--skip-news)")
+        logger.info("Step 3/4: news skipped (--skip-news)")
     else:
-        logger.info("Step 3/3: news pipeline")
+        logger.info("Step 3/4: news pipeline")
         news_failures = run_news(stocks)
+
+    filings_failures: list[str] = []
+    if skip_filings:
+        logger.info("Step 4/4: filings skipped (--skip-filings)")
+    else:
+        logger.info("Step 4/4: filings pipeline")
+        filings_failures = run_filings(stocks)
 
     failed = sorted(set(price_summary.failures) | set(indicator_failures))
     failed += [f"news: {name}" for name in news_failures]
+    failed += [f"filings: {name}" for name in filings_failures]
     elapsed = time.monotonic() - started
     if failed:
         logger.error("Update finished in %.1fs with failures: %s", elapsed, ", ".join(failed))
@@ -131,10 +186,15 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="recompute indicators over all history instead of incrementally",
     )
-    parser.add_argument("--skip-news", action="store_true", help="only prices and indicators")
+    parser.add_argument("--skip-news", action="store_true", help="skip the news pipeline")
+    parser.add_argument("--skip-filings", action="store_true", help="skip the filings pipeline")
     args = parser.parse_args(argv)
     setup_logging()
-    return run(full_indicators=args.full_indicators, skip_news=args.skip_news)
+    return run(
+        full_indicators=args.full_indicators,
+        skip_news=args.skip_news,
+        skip_filings=args.skip_filings,
+    )
 
 
 if __name__ == "__main__":

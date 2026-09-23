@@ -5,6 +5,7 @@ Run with:  uv run streamlit run dashboard.py
 
 import datetime as dt
 from dataclasses import dataclass
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -16,12 +17,16 @@ from config.loader import Stock, load_watchlist
 from config.news_sources import load_news_sources
 from processing.adjustments import adjust_prices
 from processing.entities import LINK_THRESHOLD
+from processing.results import changes
 from processing.sentiment import TradingCalendar, news_time, session_for
 from storage.db import (
     read_corporate_actions,
     read_indicators,
     read_news_daily,
+    read_pending_actions,
     read_prices,
+    read_results,
+    read_stock_filings,
     read_stock_news,
     read_story_sources,
     trading_dates,
@@ -37,6 +42,15 @@ UP_COLOR, DOWN_COLOR = "#26a69a", "#ef5350"
 SMA50_COLOR, SMA200_COLOR, BB_COLOR = "#f5a623", "#7b61ff", "rgba(120,144,156,0.8)"
 ACTION_COLOR = "#9e9e9e"
 SENTIMENT_COLOR, STORIES_COLOR = "#ab47bc", "rgba(171,71,188,0.25)"
+RESULTS_COLOR = "#26a69a"
+REVENUE_COLOR, PROFIT_COLOR = "#5c6bc0", "#26a69a"
+FILING_BADGE_COLORS = {
+    "results": "green", "corporate_action": "orange", "dividend": "blue",
+    "board_meeting": "violet", "credit_rating": "gray", "shareholding_pattern": "gray",
+    "press_release": "blue", "insider_trading": "gray", "analyst_meet": "gray", "other": "gray",
+}  # fmt: skip
+# pending_actions statuses that mean "you may need to add this to corporate_actions.yaml"
+PENDING_WARN = ("upcoming", "undated", "needs_review")
 BADGE_THRESHOLD = 0.25  # story score at or beyond +/- this gets a positive/negative badge
 MAX_NEWS_ITEMS = 40
 
@@ -100,6 +114,122 @@ def cached_news(symbol: str, model_name: str) -> pd.DataFrame:
     articles = read_stock_news(symbol, model_name, LINK_THRESHOLD)
     story_ids = articles["story_id"].dropna().unique().tolist()
     return news_items(articles, read_story_sources(story_ids), TradingCalendar(trading_dates()))
+
+
+@st.cache_data(ttl=CACHE_TTL_S, show_spinner=False)
+def cached_filings(symbol: str) -> pd.DataFrame:
+    """This stock's filings, newest first, cached."""
+    return read_stock_filings(symbol)
+
+
+@st.cache_data(ttl=CACHE_TTL_S, show_spinner=False)
+def cached_results(symbol: str) -> pd.DataFrame:
+    """This stock's results rows, cached."""
+    results = read_results()
+    return results[results["symbol"] == symbol]
+
+
+@st.cache_data(ttl=CACHE_TTL_S, show_spinner=False)
+def cached_pending(symbol: str) -> pd.DataFrame:
+    """This stock's announced corporate actions that may need adding to the YAML."""
+    pending = read_pending_actions()
+    if pending.empty:
+        return pending
+    return pending[(pending["symbol"] == symbol) & pending["status"].isin(PENDING_WARN)]
+
+
+def filing_date(filed_at: pd.Series) -> pd.Series:
+    """IST calendar date of each filing timestamp."""
+    return pd.to_datetime(filed_at, utc=True).dt.tz_convert(IST).dt.date
+
+
+def results_markers(filings: pd.DataFrame, start: dt.date, end: dt.date) -> pd.DataFrame:
+    """date, label for results filings in [start, end] (one per date), for chart markers."""
+    if filings.empty:
+        return pd.DataFrame(columns=["date", "label"])
+    rows = filings[filings["filing_type"] == "results"].copy()
+    rows["date"] = filing_date(rows["filed_at"])
+    rows = rows[(rows["date"] >= start) & (rows["date"] <= end)]
+    rows["label"] = rows["subject"].str.extract(r"(FY\d{2}Q\d)", expand=False).fillna("Results")
+    approx = rows["subject"].str.contains("[date approx.]", regex=False).fillna(False)
+    rows["label"] = rows["label"] + " results" + approx.map({True: " (date approx.)", False: ""})
+    return rows.drop_duplicates("date")[["date", "label"]].reset_index(drop=True)
+
+
+def filter_filings(
+    filings: pd.DataFrame, types: list[str], start: dt.date, end: dt.date
+) -> pd.DataFrame:
+    """Filings of the given types filed in [start, end], newest first."""
+    if filings.empty:
+        return filings
+    dates = filing_date(filings["filed_at"])
+    mask = (dates >= start) & (dates <= end) & filings["filing_type"].fillna("other").isin(types)
+    return filings[mask]
+
+
+def filing_badge(filing_type: str | None) -> str:
+    """Streamlit markdown badge for one of our filing types."""
+    kind = filing_type or "other"
+    return f":{FILING_BADGE_COLORS.get(kind, 'gray')}-badge[{kind.replace('_', ' ')}]"
+
+
+def results_table(results: pd.DataFrame, basis: str, quarters: int = 8) -> pd.DataFrame:
+    """Last `quarters` of headline results for one basis, with QoQ/YoY.
+
+    Columns: quarter, period_end, top_line (revenue, or total income when there's no
+    revenue line, as for banks), top_line_yoy, top_line_qoq, net_profit, net_profit_yoy,
+    net_profit_qoq, eps, source, flags.
+    """
+    rows = results[results["basis"] == basis]
+    if rows.empty:
+        return pd.DataFrame()
+    diff = changes(rows)
+    top = "revenue" if (diff["metric"] == "revenue").any() else "total_income"
+    out = []
+    for (quarter, period_end), q in diff.groupby(["fiscal_quarter", "period_end"]):
+        by = q.set_index("metric")
+        raw = rows[pd.to_datetime(rows["period_end"]).dt.date == period_end]
+        row = {"quarter": quarter, "period_end": period_end, "top_line_metric": top}
+        for metric, name in ((top, "top_line"), ("net_profit", "net_profit")):
+            row[name] = by["value"].get(metric)
+            row[f"{name}_yoy"] = by["yoy"].get(metric)
+            row[f"{name}_qoq"] = by["qoq"].get(metric)
+        row["eps"] = by["value"].get("eps")
+        row["source"] = "PDF (lower trust)" if (raw["trust"] == "low").any() else "XBRL"
+        row["flags"] = "; ".join(sorted(raw["flag"].dropna().unique()))
+        out.append(row)
+    table = pd.DataFrame(out).sort_values("period_end")
+    return table.tail(quarters).reset_index(drop=True)
+
+
+def build_results_figure(table: pd.DataFrame) -> go.Figure:
+    """Grouped bars of the top line and net profit per quarter, with YoY % lines."""
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    label = "Revenue" if table["top_line_metric"].iloc[0] == "revenue" else "Total income"
+    for column, name, color in (("top_line", label, REVENUE_COLOR),
+                                ("net_profit", "Net profit", PROFIT_COLOR)):  # fmt: skip
+        fig.add_trace(
+            go.Bar(x=table["quarter"], y=table[column], name=f"{name} (₹ cr)", marker_color=color)
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=table["quarter"],
+                y=table[f"{column}_yoy"] * 100,
+                name=f"{name} YoY %",
+                mode="lines+markers",
+                line={"color": color, "dash": "dot"},
+            ),
+            secondary_y=True,
+        )
+    fig.update_yaxes(title_text="₹ crore", secondary_y=False)
+    fig.update_yaxes(title_text="YoY %", secondary_y=True, showgrid=False)
+    fig.update_layout(
+        barmode="group",
+        height=420,
+        margin={"l": 10, "r": 10, "t": 30, "b": 10},
+        legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "x": 0},
+    )
+    return fig
 
 
 def news_items(
@@ -239,12 +369,14 @@ def build_figure(
     symbol: str,
     actions: pd.DataFrame | None = None,
     news: pd.DataFrame | None = None,
+    results: pd.DataFrame | None = None,
 ) -> go.Figure:
     """Candlestick + SMA/Bollinger overlays, volume, RSI, MACD and (optionally) a news
     sentiment panel, all on one shared date axis.
 
     Each row of `actions` is drawn as a dashed vertical line labelled at the top. `news`
-    is news_daily rows (session_date, weighted_score, story_count).
+    is news_daily rows (session_date, weighted_score, story_count). `results` (date,
+    label, from results_markers) adds a dotted line on the price panel per results date.
     """
     has = {c: c in df.columns and df[c].notna().any() for c in df.columns}
     with_news = news is not None
@@ -401,6 +533,29 @@ def build_figure(
             bgcolor="rgba(0,0,0,0)",
         )
 
+    for marker in (results if results is not None else pd.DataFrame()).itertuples():
+        fig.add_shape(
+            type="line",
+            x0=marker.date,
+            x1=marker.date,
+            xref="x",
+            y0=0,
+            y1=1,
+            yref="y domain",
+            line={"color": RESULTS_COLOR, "dash": "dot", "width": 1},
+        )
+        fig.add_annotation(
+            x=marker.date,
+            xref="x",
+            y=0,
+            yref="y domain",
+            text=marker.label,
+            showarrow=False,
+            xanchor="left",
+            yanchor="bottom",
+            font={"size": 10, "color": RESULTS_COLOR},
+        )
+
     fig.update_xaxes(rangebreaks=[{"bounds": ["sat", "mon"]}, {"values": missing_trading_days(x)}])
     fig.update_layout(
         height=1150 if with_news else 950,
@@ -495,6 +650,81 @@ def render_news_list(items: pd.DataFrame, start: dt.date, end: dt.date) -> None:
         st.caption(f"Showing the latest {MAX_NEWS_ITEMS} of {len(in_range)} stories.")
 
 
+def render_pending_actions(pending: pd.DataFrame) -> None:
+    """Warning banner for announced corporate actions not yet in corporate_actions.yaml."""
+    for a in pending.itertuples():
+        when = f"ex-date {a.ex_date:%d %b %Y}" if pd.notna(a.ex_date) else "no ex-date found"
+        ratio = f" {a.ratio}" if a.ratio else ""
+        st.warning(
+            f"**Announced {a.action_type}{ratio} ({when}) is not in "
+            f"`config/corporate_actions.yaml`** [{a.status}]. {a.note}",
+            icon="⚠️",
+        )
+
+
+def render_filings(filings: pd.DataFrame, start: dt.date, end: dt.date) -> None:
+    """Filings for the selected range, with a category filter."""
+    if filings.empty:
+        st.caption(
+            "No filings stored for this stock. Results files come from the inbox "
+            "(`uv run python -m collectors.result_files checklist`) or its IR site."
+        )
+        return
+    present = sorted(filings["filing_type"].fillna("other").unique())
+    types = st.multiselect("Categories", present, default=present, key="filing_types")
+    shown = filter_filings(filings, types, start, end)
+    if shown.empty:
+        st.caption("No filings of these categories in the selected range.")
+        return
+    for f in shown.itertuples():
+        when = pd.Timestamp(f.filed_at).tz_convert(IST)
+        cols = st.columns([5, 1])
+        cols[0].markdown(
+            f"{when:%d %b %Y} · {filing_badge(f.filing_type)} · "
+            f"{escape_markdown(f.subject or f.category or '')}  \n"
+            f"{escape_markdown(f.category or '')} · {f.exchange}"
+        )
+        if isinstance(f.attachment_url, str) and f.attachment_url:
+            cols[1].link_button("Open", f.attachment_url)
+        elif isinstance(f.attachment_path, str) and Path(f.attachment_path).exists():
+            path = Path(f.attachment_path)
+            cols[1].download_button(
+                "Download", path.read_bytes(), file_name=path.name, key=f"dl-{f.id}"
+            )
+
+
+def render_results(results: pd.DataFrame) -> None:
+    """Quarterly revenue/profit bars with YoY lines and the last-8-quarters table."""
+    if results.empty:
+        st.caption(
+            "No results for this stock yet. See which quarters to download with "
+            "`uv run python -m collectors.result_files checklist`."
+        )
+        return
+    bases = [b for b in ("consolidated", "standalone") if (results["basis"] == b).any()]
+    basis = st.radio("Basis", bases, horizontal=True, key="results_basis")
+    table = results_table(results, basis)
+    st.plotly_chart(build_results_figure(table), width="stretch")
+    shown = table.drop(columns=["top_line_metric"]).rename(
+        columns={
+            "top_line": "revenue"
+            if table["top_line_metric"].iloc[0] == "revenue"
+            else "total income"
+        }  # fmt: skip
+    )
+    pct = [c for c in shown.columns if c.endswith(("_yoy", "_qoq"))]
+    st.dataframe(
+        shown.style.format({**dict.fromkeys(pct, "{:+.1%}"), "eps": "{:.2f}"}, na_rep="—").format(
+            precision=0,
+            thousands=",",
+            subset=[c for c in shown.columns if c in ("revenue", "total income", "net_profit")],
+        ),  # fmt: skip
+        hide_index=True,
+        width="stretch",
+    )
+    st.caption("₹ crore; EPS in ₹ per share, as reported (not restated for bonuses/splits).")
+
+
 def sidebar(stocks: list[Stock]) -> tuple[Stock, str]:
     """Render the stock selector, candle mode toggle and reload button."""
     st.sidebar.title("stock-intel")
@@ -542,6 +772,7 @@ def main() -> None:
     prices = cached_prices(stock.symbol)
     st.header(f"{stock.name} ({stock.symbol})")
     st.caption(f"{stock.sector} · Yahoo: {stock.yf}")
+    render_pending_actions(cached_pending(stock.symbol))
 
     if prices.empty:
         st.info(
@@ -580,7 +811,11 @@ def main() -> None:
     if not news_daily.empty:
         sessions = pd.to_datetime(news_daily["session_date"]).dt.date
         news_view = news_daily[(sessions >= start) & (sessions <= end)]
-    st.plotly_chart(build_figure(view, stock.symbol, visible_actions, news_view), width="stretch")
+    filings = cached_filings(stock.symbol)
+    markers = results_markers(filings, start, end)
+    st.plotly_chart(
+        build_figure(view, stock.symbol, visible_actions, news_view, markers), width="stretch"
+    )
 
     for _, action in visible_actions.iterrows():
         effect = (
@@ -594,7 +829,13 @@ def main() -> None:
             icon="ℹ️",
         )
 
-    render_news_list(cached_news(stock.symbol, model_name), start, end)
+    news_tab, filings_tab, results_tab = st.tabs(["News", "Filings", "Results"])
+    with news_tab:
+        render_news_list(cached_news(stock.symbol, model_name), start, end)
+    with filings_tab:
+        render_filings(filings, start, end)
+    with results_tab:
+        render_results(cached_results(stock.symbol))
 
     fetched = prices["fetched_at"].max().astimezone(IST)
     st.caption(

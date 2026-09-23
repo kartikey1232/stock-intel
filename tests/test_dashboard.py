@@ -201,3 +201,100 @@ def test_figure_adds_news_panel_on_shared_axis() -> None:
     assert sentiment.xaxis == "x5"
     # shared_xaxes links every other panel's x-axis to the bottom (news) one
     assert [fig.layout[f"xaxis{i}"].matches for i in ("", 2, 3, 4)] == ["x5"] * 4
+
+
+# --- filings and results ------------------------------------------------------------
+
+
+def filings_df() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "id": ["a", "b", "c", "d"],
+            "exchange": ["IR", "IR", "NSE", "NSE"],
+            "filed_at": pd.to_datetime(
+                ["2026-07-17 18:30", "2022-08-13 18:30", "2026-07-20 05:00", "2026-07-17 20:00"],
+                utc=True,
+            ),
+            "category": ["Financial Results"] * 2 + ["Board Meeting", "Financial Results"],
+            "subject": [
+                "FY27Q1 consolidated+standalone results (pdf)",
+                "FY23Q1 consolidated+standalone results (pdf) [date approx.]",
+                "Board meeting to consider dividend",
+                "FY27Q1 standalone results (xbrl)",
+            ],
+            "filing_type": ["results", "results", "board_meeting", "results"],
+            "attachment_url": ["https://x/a.pdf", None, None, None],
+            "attachment_path": [None, None, None, None],
+        }
+    )
+
+
+def test_results_markers_use_ist_dates_and_flag_approximate_ones() -> None:
+    m = dashboard.results_markers(filings_df(), dt.date(2022, 1, 1), dt.date(2026, 9, 23))
+    assert m.to_dict("records") == [
+        {"date": dt.date(2026, 7, 18), "label": "FY27Q1 results"},  # 18:30 UTC = midnight IST
+        {"date": dt.date(2022, 8, 14), "label": "FY23Q1 results (date approx.)"},
+    ]  # two filings on 18 Jul collapse into one marker
+    assert dashboard.results_markers(filings_df(), dt.date(2026, 8, 1), dt.date(2026, 9, 23)).empty
+
+
+def test_filter_filings_by_type_and_range() -> None:
+    shown = dashboard.filter_filings(
+        filings_df(), ["board_meeting"], dt.date(2026, 7, 1), dt.date(2026, 9, 23)
+    )
+    assert shown["id"].tolist() == ["c"]
+    both = dashboard.filter_filings(
+        filings_df(), ["results", "board_meeting"], dt.date(2026, 7, 1), dt.date(2026, 9, 23)
+    )
+    assert set(both["id"]) == {"a", "c", "d"}
+
+
+def test_filing_badge() -> None:
+    assert dashboard.filing_badge("corporate_action") == ":orange-badge[corporate action]"
+    assert dashboard.filing_badge(None) == ":gray-badge[other]"
+
+
+def result_rows(metric_values: dict[str, list[float]], trust: str = "high") -> pd.DataFrame:
+    ends = pd.to_datetime(["2025-06-30", "2025-09-30", "2025-12-31", "2026-03-31", "2026-06-30"])
+    rows = []
+    for metric, values in metric_values.items():
+        for end, value in zip(ends, values, strict=True):
+            rows.append({"symbol": "X", "period_end": end.date(), "basis": "consolidated",
+                         "metric": metric, "fiscal_quarter": "", "value": value, "unit": "",
+                         "source": "xbrl", "trust": trust, "flag": None})  # fmt: skip
+    df = pd.DataFrame(rows)
+    from processing.results import fiscal_quarter
+
+    df["fiscal_quarter"] = df["period_end"].map(fiscal_quarter)
+    return df
+
+
+def test_results_table_has_yoy_qoq_and_falls_back_to_total_income() -> None:
+    rows = result_rows(
+        {"total_income": [100, 110, 120, 130, 150], "net_profit": [10, 11, 12, 13, 20]}
+    )
+    table = dashboard.results_table(rows, "consolidated")
+    last = table.iloc[-1]
+    assert (last["quarter"], last["top_line_metric"]) == ("FY27Q1", "total_income")
+    assert last["top_line_yoy"] == pytest.approx(0.5)
+    assert last["net_profit_qoq"] == pytest.approx(20 / 13 - 1)
+    assert last["source"] == "XBRL"
+    assert dashboard.results_table(rows, "standalone").empty
+
+
+def test_results_figure_has_bars_and_yoy_lines() -> None:
+    table = dashboard.results_table(
+        result_rows(
+            {"revenue": [100, 110, 120, 130, 150], "net_profit": [10, 11, 12, 13, 20]}, trust="low"
+        ),  # fmt: skip
+        "consolidated",
+    )
+    assert table["source"].iloc[-1] == "PDF (lower trust)"
+    names = [t.name for t in dashboard.build_results_figure(table).data]
+    assert names == ["Revenue (₹ cr)", "Revenue YoY %", "Net profit (₹ cr)", "Net profit YoY %"]
+
+
+def test_price_figure_draws_results_markers() -> None:
+    markers = pd.DataFrame({"date": [dt.date(2026, 7, 18)], "label": ["FY27Q1 results"]})
+    fig = dashboard.build_figure(history(), "TEST", results=markers)
+    assert "FY27Q1 results" in [a.text for a in fig.layout.annotations]

@@ -210,6 +210,79 @@ class NewsDaily(Base):
     computed_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, nullable=False)
 
 
+class Filing(Base):
+    """A raw exchange filing (announcement). Written by a filings collector or importer.
+
+    `category` is the exchange's own label; `filing_type`/`filing_tags` are ours, set by
+    processing/filing_categories.py. Attachments live on disk under data/filings/.
+    """
+
+    __tablename__ = "filings"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    exchange: Mapped[str] = mapped_column(String(8), nullable=False)
+    exchange_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    filed_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, nullable=False, index=True)
+    first_seen_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, nullable=False)
+    category: Mapped[str | None] = mapped_column(String(255))
+    subject: Mapped[str | None] = mapped_column(Text)
+    description: Mapped[str | None] = mapped_column(Text)
+    attachment_url: Mapped[str | None] = mapped_column(Text)
+    attachment_path: Mapped[str | None] = mapped_column(Text)
+    attachment_sha256: Mapped[str | None] = mapped_column(String(64))
+    duplicate_of: Mapped[str | None] = mapped_column(String(64), index=True)
+    filing_type: Mapped[str | None] = mapped_column(String(32), index=True)
+    filing_tags: Mapped[str | None] = mapped_column(String(255))
+
+
+class PendingAction(Base):
+    """A corporate action announced in a filing, compared with corporate_actions.yaml.
+
+    Rebuilt by processing/filing_categories.py; the YAML itself is never edited
+    automatically.
+    """
+
+    __tablename__ = "pending_actions"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)  # filing id + action type
+    filing_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    action_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    ratio: Mapped[str | None] = mapped_column(String(32))
+    price_factor: Mapped[float | None] = mapped_column(Float)
+    record_date: Mapped[dt.date | None] = mapped_column(Date)
+    ex_date: Mapped[dt.date | None] = mapped_column(Date)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    note: Mapped[str | None] = mapped_column(Text)
+    filed_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, nullable=False)
+    subject: Mapped[str | None] = mapped_column(Text)
+    detected_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, nullable=False)
+
+
+class Result(Base):
+    """One reported line item for one quarter, in long format (processing/results.py).
+
+    Long because companies report different items (banks: interest earned, NPAs...).
+    Monetary values are in ₹ crore; EPS in ₹ per share; ratios in percent.
+    """
+
+    __tablename__ = "results"
+
+    symbol: Mapped[str] = mapped_column(String(32), primary_key=True)
+    period_end: Mapped[dt.date] = mapped_column(Date, primary_key=True)
+    basis: Mapped[str] = mapped_column(String(16), primary_key=True)  # standalone | consolidated
+    metric: Mapped[str] = mapped_column(String(128), primary_key=True)
+    fiscal_quarter: Mapped[str] = mapped_column(String(8), nullable=False)  # e.g. FY27Q1
+    value: Mapped[float] = mapped_column(Float, nullable=False)
+    unit: Mapped[str] = mapped_column(String(16), nullable=False)  # INR crore | INR/share | %
+    source: Mapped[str] = mapped_column(String(8), nullable=False)  # xbrl | pdf
+    trust: Mapped[str] = mapped_column(String(8), nullable=False)  # high (xbrl) | low (pdf)
+    filing_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    extracted_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, nullable=False)
+    flag: Mapped[str | None] = mapped_column(Text)  # validation warning, if any
+
+
 TEXT_STATUSES = ("pending", "ok", "paywalled", "failed", "skipped")
 
 PRICES: Table = Price.__table__  # type: ignore[assignment]
@@ -220,6 +293,9 @@ ARTICLES: Table = Article.__table__  # type: ignore[assignment]
 MENTIONS: Table = ArticleMention.__table__  # type: ignore[assignment]
 SENTIMENT: Table = ArticleSentiment.__table__  # type: ignore[assignment]
 NEWS_DAILY: Table = NewsDaily.__table__  # type: ignore[assignment]
+FILINGS: Table = Filing.__table__  # type: ignore[assignment]
+PENDING_ACTIONS: Table = PendingAction.__table__  # type: ignore[assignment]
+RESULTS: Table = Result.__table__  # type: ignore[assignment]
 KEY_COLUMNS = ("symbol", "date")
 
 
@@ -693,6 +769,127 @@ def read_story_sources(story_ids: list[str], engine: Engine | None = None) -> pd
     if not frames:
         return pd.DataFrame(columns=["story_id", "source"])
     return pd.concat(frames, ignore_index=True).reindex(columns=["story_id", "source"])
+
+
+def read_filings(engine: Engine | None = None) -> pd.DataFrame:
+    """All filings with the fields needed for categorisation."""
+    columns = ["id", "exchange", "symbol", "filed_at", "category", "subject", "description"]
+    stmt = select(*(FILINGS.c[c] for c in columns)).order_by(FILINGS.c.filed_at)
+    with (engine or get_engine()).connect() as conn:
+        return pd.DataFrame(conn.execute(stmt).mappings().all(), columns=columns)
+
+
+def read_stock_filings(symbol: str, engine: Engine | None = None) -> pd.DataFrame:
+    """One stock's filings for display, newest first."""
+    columns = [
+        "id", "exchange", "filed_at", "category", "subject", "filing_type",
+        "attachment_url", "attachment_path",
+    ]  # fmt: skip
+    stmt = (
+        select(*(FILINGS.c[c] for c in columns))
+        .where(FILINGS.c.symbol == symbol)
+        .order_by(FILINGS.c.filed_at.desc())
+    )
+    with (engine or get_engine()).connect() as conn:
+        return pd.DataFrame(conn.execute(stmt).mappings().all(), columns=columns)
+
+
+def set_filing_types(types: dict[str, tuple[str, str]], engine: Engine | None = None) -> None:
+    """Set (filing_type, filing_tags) per filing id."""
+    rows = [{"fid": fid, "ft": ft, "tags": tags} for fid, (ft, tags) in types.items()]
+    stmt = (
+        update(FILINGS)
+        .where(FILINGS.c.id == bindparam("fid"))
+        .values(filing_type=bindparam("ft"), filing_tags=bindparam("tags"))
+    )
+    with (engine or get_engine()).begin() as conn:
+        for chunk in _chunks(rows, UPSERT_CHUNK_SIZE):
+            conn.execute(stmt, chunk)
+
+
+def replace_pending_actions(rows: list[dict[str, Any]], engine: Engine | None = None) -> None:
+    """Replace the whole pending_actions table (it is derived data)."""
+    with (engine or get_engine()).begin() as conn:
+        conn.execute(delete(PENDING_ACTIONS))
+        for chunk in _chunks(rows, UPSERT_CHUNK_SIZE):
+            conn.execute(PENDING_ACTIONS.insert(), chunk)
+
+
+def read_pending_actions(engine: Engine | None = None) -> pd.DataFrame:
+    """All pending_actions rows, newest filing first."""
+    stmt = select(PENDING_ACTIONS).order_by(PENDING_ACTIONS.c.filed_at.desc())
+    with (engine or get_engine()).connect() as conn:
+        return pd.DataFrame(conn.execute(stmt).mappings().all())
+
+
+def insert_filing(row: dict[str, Any], engine: Engine | None = None) -> bool:
+    """Insert a filings row unless its id exists. Returns True if inserted."""
+    with (engine or get_engine()).begin() as conn:
+        exists = conn.execute(select(FILINGS.c.id).where(FILINGS.c.id == row["id"])).first()
+        if exists:
+            return False
+        conn.execute(FILINGS.insert(), [row])
+        return True
+
+
+def filing_by_sha256(sha256: str, engine: Engine | None = None) -> dict[str, Any] | None:
+    """The filings row whose attachment has this hash, if any."""
+    stmt = select(FILINGS).where(FILINGS.c.attachment_sha256 == sha256)
+    with (engine or get_engine()).connect() as conn:
+        row = conn.execute(stmt).mappings().first()
+    return dict(row) if row else None
+
+
+def update_filing_meta(
+    meta: dict[str, tuple[dt.datetime, str]], engine: Engine | None = None
+) -> None:
+    """Set filed_at and subject per filing id."""
+    rows = [{"fid": fid, "at": at, "subj": subj} for fid, (at, subj) in meta.items()]
+    stmt = (
+        update(FILINGS)
+        .where(FILINGS.c.id == bindparam("fid"))
+        .values(filed_at=bindparam("at"), subject=bindparam("subj"))
+    )
+    with (engine or get_engine()).begin() as conn:
+        for chunk in _chunks(rows, UPSERT_CHUNK_SIZE):
+            conn.execute(stmt, chunk)
+
+
+def filing_urls(symbol: str, engine: Engine | None = None) -> set[str]:
+    """Attachment URLs already stored for `symbol`."""
+    stmt = select(FILINGS.c.attachment_url).where(
+        FILINGS.c.symbol == symbol, FILINGS.c.attachment_url.is_not(None)
+    )
+    with (engine or get_engine()).connect() as conn:
+        return set(conn.execute(stmt).scalars())
+
+
+def read_result_files(engine: Engine | None = None) -> pd.DataFrame:
+    """Filings that carry a stored results file (XBRL or PDF) on disk."""
+    columns = ["id", "exchange", "symbol", "filed_at", "subject", "attachment_path"]
+    stmt = (
+        select(*(FILINGS.c[c] for c in columns))
+        .where(FILINGS.c.filing_type == "results", FILINGS.c.attachment_path.is_not(None))
+        .order_by(FILINGS.c.filed_at)
+    )
+    with (engine or get_engine()).connect() as conn:
+        return pd.DataFrame(conn.execute(stmt).mappings().all(), columns=columns)
+
+
+def replace_results(rows: list[dict[str, Any]], engine: Engine | None = None) -> None:
+    """Replace the whole results table (it is rebuilt from stored files)."""
+    with (engine or get_engine()).begin() as conn:
+        conn.execute(delete(RESULTS))
+        for chunk in _chunks(rows, UPSERT_CHUNK_SIZE):
+            conn.execute(RESULTS.insert(), chunk)
+
+
+def read_results(engine: Engine | None = None) -> pd.DataFrame:
+    """All results rows."""
+    stmt = select(RESULTS).order_by(RESULTS.c.symbol, RESULTS.c.period_end)
+    with (engine or get_engine()).connect() as conn:
+        df = pd.DataFrame(conn.execute(stmt).mappings().all())
+    return df if not df.empty else pd.DataFrame(columns=list(RESULTS.columns.keys()))
 
 
 def count_articles(group_by: str = "fetched_via", engine: Engine | None = None) -> dict[str, int]:

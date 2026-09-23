@@ -4,7 +4,9 @@ A personal stock intelligence tool for Indian markets (NSE/BSE). It collects dai
 from Yahoo Finance, computes technical indicators, and shows them in a Streamlit dashboard.
 
 **Current status:** Phases 1 (prices + indicators) and 2 (news + sentiment) are complete.
-Exchange filings, social signals, backtesting and Telegram alerts are planned. See [Roadmap](#roadmap).
+Phase 3 (filings and results) works from a manual results inbox plus HDFC Bank's IR site;
+automated exchange access is on hold pending the exchanges' consent. Social signals,
+backtesting and Telegram alerts are planned. See [Roadmap](#roadmap).
 
 ## Setup
 
@@ -23,14 +25,23 @@ cp .env.example .env
 
 ## Running the update
 
-One command updates everything for every stock in the watchlist: prices and
-indicators, then the news pipeline (collect articles, extract text, group stories, link
-articles to stocks, score sentiment, build daily aggregates):
+One command updates everything for every stock in the watchlist, in four stages:
+
+1. prices;
+2. indicators;
+3. the news pipeline (collect articles, extract text, group stories, link articles to
+   stocks, score sentiment, build daily aggregates);
+4. the filings pipeline (HDFC Bank results PDFs from its IR site, import the results
+   inbox, classify filings, extract results).
 
 ```bash
-uv run python run_update.py               # everything
-uv run python run_update.py --skip-news   # prices and indicators only
+uv run python run_update.py                  # everything
+uv run python run_update.py --skip-news      # without the news pipeline
+uv run python run_update.py --skip-filings   # without the filings pipeline
 ```
+
+A rejected inbox file makes the run exit with `1`; the reason is in
+`data/filings/inbox/rejected/`.
 
 The first run with news downloads the FinBERT model (~440 MB, a few minutes). A news
 failure never blocks price updates, and each news step runs even if an earlier one
@@ -125,11 +136,69 @@ Opens at <http://localhost:8501>. Pick a stock and date range in the sidebar. Th
 - **News sentiment panel:** daily story-weighted sentiment (line, −1 to +1) and story
   count (bars) per trading session, on the same date axis as the price chart.
 - **News sentiment card:** 7-day average compared with the 30-day average.
-- **News list** for the selected range: linked headline, source, IST time, sentiment
-  badge, and "+N more sources" when other outlets carried the same story.
+- **Results markers:** dotted lines on the price chart at each results date. Dates the file
+  didn't state are labelled "(date approx.)".
+- **Pending corporate actions:** a warning banner for announced splits, bonuses or demergers
+  that may need adding to `config/corporate_actions.yaml`.
+- **Tabs:**
+  - **News:** linked headline, source, IST time, sentiment badge, and "+N more sources"
+    when other outlets carried the same story.
+  - **Filings:** date, category badge, subject and an attachment link or download, with a
+    category filter.
+  - **Results:** quarterly revenue (total income for banks) and net profit bars with YoY %
+    lines, plus a last-8-quarters table with YoY/QoQ, source (XBRL or lower-trust PDF) and
+    validation flags; standalone or consolidated.
 
 Data is cached for 5 minutes. Use **Reload from database** in the sidebar after running an
 update.
+
+## Exchange filings (Phase 3, in progress)
+
+`processing/filing_categories.py` sorts filings into our own types (results, board_meeting,
+dividend, corporate_action, shareholding_pattern, press_release, credit_rating,
+insider_trading, analyst_meet, other) while keeping the exchange's label. It extracts
+announced splits, bonuses, demergers, rights issues and buybacks (ratio, record date,
+ex-date) and compares them with `config/corporate_actions.yaml` in a `pending_actions`
+table. It never edits the YAML: each action gets a status (recorded, upcoming, undated,
+yahoo_adjusted, needs_review, no_adjustment) telling you whether to add it.
+
+```bash
+uv run python -m processing.filing_categories
+```
+
+There is no filings collector yet. NSE's terms prohibit automated collection, and how
+filings will be sourced (BSE, a manual inbox, or licensed data) is still undecided.
+
+## Quarterly results
+
+Results are stored in long format (`results` table): one row per symbol, quarter, basis
+(standalone/consolidated) and line item, in ₹ crore (EPS in ₹/share, NPA ratios in %).
+Headline metrics get QoQ/YoY changes and validation flags (a >5x jump or an unexpected
+sign change usually means a unit or parsing error).
+
+Where the files come from:
+
+- **XBRL you download** (preferred, trust = high). Run the checklist to see what's missing
+  and the exact NSE page for each file, save the XBRL (.xml, not iXBRL) into
+  `data/filings/inbox/` with any name, then import:
+
+  ```bash
+  uv run python -m collectors.result_files checklist
+  uv run python -m collectors.result_files import
+  ```
+
+  Files are identified by their content (company, quarter, standalone/consolidated).
+  Anything that doesn't parse goes to `inbox/rejected/` with a `.reason.txt`.
+- **HDFC Bank results PDFs** from its investor-relations site, fetched automatically
+  (trust = low, used only where no XBRL exists):
+
+  ```bash
+  uv run python -m collectors.results_ir
+  ```
+
+```bash
+uv run python -m processing.results --report   # last 8 quarters of revenue and net profit
+```
 
 ## Data use
 
@@ -205,12 +274,16 @@ New stocks get their full 5-year history on the next update.
 ├── collectors/            # Fetch and store RAW data only (no analysis)
 │   ├── prices.py          # Daily OHLCV from Yahoo Finance
 │   ├── news.py            # Raw articles from Google News + publisher RSS
+│   ├── result_files.py    # Results inbox importer + missing-files checklist
+│   ├── results_ir.py      # HDFC Bank results PDFs from its IR site
 │   └── article_text.py    # Article full text (trafilatura), robots.txt-aware
 ├── processing/            # Turn raw data into insight (no network calls)
 │   ├── adjustments.py     # Adjusted OHLC + unrecorded-gap detection
 │   ├── stories.py         # Groups syndicated article copies into stories
 │   ├── entities.py        # Links articles to the watchlist stocks they're about
 │   ├── sentiment.py       # FinBERT scoring + daily per-stock aggregates
+│   ├── filing_categories.py  # Filing types + announced corporate actions
+│   ├── results.py         # XBRL/PDF results extraction, QoQ/YoY, validation
 │   └── indicators.py      # RSI, MACD, SMA, EMA, Bollinger, ATR via pandas-ta
 ├── storage/
 │   └── db.py              # SQLAlchemy schema, upserts, reads
@@ -243,6 +316,13 @@ New stocks get their full 5-year history on the next update.
   p_positive, p_negative, p_neutral, score, computed_at.
 - `news_daily` (`symbol, session_date, model_name`): story_count, article_count,
   mean_score, weighted_score, strong_negative_stories, latest_first_seen_at.
+- `filings` (`id`): exchange, exchange_id, symbol, filed_at, first_seen_at, category (the
+  exchange's label), subject, description, attachment_url/path/sha256, duplicate_of,
+  filing_type, filing_tags. Empty until a collector or importer exists.
+- `pending_actions` (`id`): symbol, action_type, ratio, price_factor, record_date,
+  ex_date, status, note, filed_at, subject. Rebuilt on every run.
+- `results` (`symbol, period_end, basis, metric`): fiscal_quarter, value, unit, source
+  (xbrl/pdf), trust, filing_id, extracted_at, flag. Rebuilt from stored files.
 
 Architecture rules and coding conventions are in [`CLAUDE.md`](CLAUDE.md).
 
@@ -284,6 +364,9 @@ uv run ruff format .       # format
   - FinBERT scores the tone of the text, not its effect on the stock. "Supplier wins an
     order from Reliance" reads as positive, and the model was trained on English
     financial news, not Indian market phrasing.
+  - Results: bank XBRL tags are unverified until a real HDFC Bank XBRL is imported.
+    Scanned PDFs without a text layer can't be read (no OCR). EPS isn't restated for
+    bonuses or splits.
   - Story grouping uses titles only. It errs on the side of keeping stories apart (a
     heavily reworded copy becomes its own story). A known false merge: the alias "HDFC"
     also matches "HDFC Mutual Fund", so separate mutual-fund lists can group together.
