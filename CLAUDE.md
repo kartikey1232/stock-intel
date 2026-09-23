@@ -129,6 +129,17 @@ uv run streamlit run dashboard.py               # launch the dashboard
   filings modules are imported lazily inside `news_steps()`/`filings_steps()`, so a broken
   dependency (e.g. torch, pdfplumber) can't stop price updates. Keep it that way: don't
   import them at the top of run_update.py.
+- Scheduling: `scripts/install_schedule.sh` generates a per-user LaunchAgent
+  (`~/Library/LaunchAgents/com.stockintel.update.plist`, weekdays 16:15 local time = IST)
+  that runs `scripts/scheduled_update.sh`. launchd gives jobs a minimal environment, so the
+  wrapper uses absolute paths (uv in ~/.local/bin), cds to the project, waits up to 5 min
+  for the network after wake, and logs to `logs/update-YYYY-MM-DD.log`. Re-run the
+  installer after moving the project, because the plist stores absolute paths.
+- File paths stored in the database (`filings.attachment_path`) are project-relative;
+  resolve them with `storage.db.project_path()` and store them with
+  `to_project_relative()`. Never store absolute paths: the project lives in
+  ~/Developer/stock-intel because launchd jobs can't read ~/Desktop (macOS privacy
+  protection), and it may move again.
 - Results filings keep `filing_type = "results"` through classification (a test checks
   this), because `results.rebuild` selects files by that type.
 - A results file's `filed_at` is the board-approval date stated in the file (XBRL field, or

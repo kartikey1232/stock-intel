@@ -40,6 +40,7 @@ from dateutil import parser as date_parser
 from config.loader import Stock, load_watchlist
 from storage.db import (
     init_db,
+    project_path,
     read_result_files,
     read_results,
     replace_results,
@@ -475,7 +476,7 @@ def rebuild(stocks: list[Stock]) -> list[dict]:
     filing_meta = {}
     for f in files.itertuples(index=False):
         try:
-            per_file = parse_file(Path(f.attachment_path), stocks)
+            per_file = parse_file(project_path(f.attachment_path), stocks)
         except (ResultParseError, OSError) as exc:
             logger.error("%s: can't parse %s: %s", f.symbol, f.attachment_path, exc)
             continue

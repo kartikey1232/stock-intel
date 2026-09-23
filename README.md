@@ -119,6 +119,24 @@ uv run python -m processing.sentiment --report   # FinBERT sentiment + daily per
   stories. Copies of a story count once. News after 15:30 IST or on a non-trading day
   counts towards the next session.
 
+## Daily schedule (macOS)
+
+A launchd job runs `run_update.py` every weekday at 16:15 IST, after the market closes at
+15:30:
+
+```bash
+scripts/install_schedule.sh            # install / reinstall
+scripts/install_schedule.sh --remove   # disable and remove
+```
+
+- Each run logs to `logs/update-YYYY-MM-DD.log`; logs older than 60 days are deleted.
+- It runs as you, without a terminal open, while you're logged in (a locked screen is
+  fine). It doesn't run while you're logged out.
+- If the Mac is asleep at 16:15, the run happens as soon as it wakes; several missed days
+  collapse into one run. If the Mac is shut down, the run is skipped.
+- Check it: `launchctl print gui/$(id -u)/com.stockintel.update | grep -E "runs|last exit"`,
+  and look at today's log.
+
 ## Dashboard
 
 ```bash

@@ -420,3 +420,12 @@ def test_ir_collector_skips_dead_links_and_non_pdfs(engine: Engine, monkeypatch)
     assert len(db.read_result_files()) == 1  # only the real PDF was stored
     assert ir.collect_all(STOCKS, client=client) == {}  # rerun: known URL, nothing new
     assert len(db.read_result_files()) == 1
+
+
+def test_stored_paths_are_project_relative_and_resolvable(tmp_path: Path) -> None:
+    inside = db.PROJECT_ROOT / "data" / "filings" / "X" / "f.xml"
+    assert db.to_project_relative(inside) == "data/filings/X/f.xml"
+    assert db.project_path("data/filings/X/f.xml") == inside
+    outside = tmp_path / "f.xml"
+    assert db.to_project_relative(outside) == str(outside.resolve())
+    assert db.project_path(str(outside)) == outside

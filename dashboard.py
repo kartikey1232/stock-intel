@@ -5,7 +5,6 @@ Run with:  uv run streamlit run dashboard.py
 
 import datetime as dt
 from dataclasses import dataclass
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -20,6 +19,7 @@ from processing.entities import LINK_THRESHOLD
 from processing.results import changes
 from processing.sentiment import TradingCalendar, news_time, session_for
 from storage.db import (
+    project_path,
     read_corporate_actions,
     read_indicators,
     read_news_daily,
@@ -686,8 +686,8 @@ def render_filings(filings: pd.DataFrame, start: dt.date, end: dt.date) -> None:
         )
         if isinstance(f.attachment_url, str) and f.attachment_url:
             cols[1].link_button("Open", f.attachment_url)
-        elif isinstance(f.attachment_path, str) and Path(f.attachment_path).exists():
-            path = Path(f.attachment_path)
+        elif isinstance(f.attachment_path, str) and project_path(f.attachment_path).exists():
+            path = project_path(f.attachment_path)
             cols[1].download_button(
                 "Download", path.read_bytes(), file_name=path.name, key=f"dl-{f.id}"
             )

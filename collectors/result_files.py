@@ -38,7 +38,14 @@ from processing.results import (
     parse_file,
     rebuild,
 )
-from storage.db import PROJECT_ROOT, filing_by_sha256, init_db, insert_filing, read_results
+from storage.db import (
+    PROJECT_ROOT,
+    filing_by_sha256,
+    init_db,
+    insert_filing,
+    read_results,
+    to_project_relative,
+)
 from utils import setup_logging
 
 logger = logging.getLogger(__name__)
@@ -149,7 +156,7 @@ def store_result_file(
             "subject": subject,
             "description": original_name,
             "attachment_url": source_url,
-            "attachment_path": str(path),
+            "attachment_path": to_project_relative(path),
             "attachment_sha256": digest,
             "filing_type": "results",
             "filing_tags": "results",

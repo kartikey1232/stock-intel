@@ -299,6 +299,23 @@ RESULTS: Table = Result.__table__  # type: ignore[assignment]
 KEY_COLUMNS = ("symbol", "date")
 
 
+def project_path(path: str | Path) -> Path:
+    """Resolve a stored path: relative paths are relative to the project root.
+
+    File paths are stored project-relative so the project folder can be moved.
+    """
+    path = Path(path)
+    return path if path.is_absolute() else PROJECT_ROOT / path
+
+
+def to_project_relative(path: Path) -> str:
+    """`path` relative to the project root if it's inside it, else as an absolute path."""
+    try:
+        return str(path.resolve().relative_to(PROJECT_ROOT))
+    except ValueError:
+        return str(path)
+
+
 def resolve_db_url() -> str:
     """Return the SQLAlchemy URL for the database configured by DB_PATH in .env."""
     load_dotenv()
