@@ -142,11 +142,11 @@ uv run streamlit run dashboard.py               # launch the dashboard
   through `escape_markdown` because Streamlit treats `$` as LaTeX.
 - Article text is stored for personal analysis only (see README "Data use"). Never add
   features that publish or share stored article text.
-- Filings: there is no filings collector yet. NSE's Terms of Use prohibit automated
-  collection; BSE's API needs a browser session and its terms forbid reproduction without
-  written consent. The source is undecided (see the Phase 3 investigation). Don't build
-  NSE/BSE scraping without an explicit decision. The `filings` table and
-  `processing/filing_categories.py` are source-agnostic.
+- Filings: there is no exchange filings collector, and there won't be one without written
+  consent (principle 7). NSE's Terms of Use prohibit automated collection; BSE's terms
+  forbid reproduction without written consent. The `filings` table and
+  `processing/filing_categories.py` are source-agnostic, so a collector can be added later
+  without changing them.
 - Filing categories: a board meeting "to consider" X is a board_meeting, never an action.
   Corporate actions found in filings go to `pending_actions` with a status; the code must
   never write `config/corporate_actions.yaml` (there's a test for this). Because Yahoo
@@ -192,6 +192,13 @@ uv run streamlit run dashboard.py               # launch the dashboard
 5. **Secrets** live only in `.env`, loaded via `python-dotenv`. Never hardcode keys or tokens,
    and never commit `.env` (keep a `.env.example` with placeholder values up to date).
 6. **Logging:** use the `logging` module, never `print`. Logs are written to `logs/`.
+7. **No automated access to NSE or BSE, by any means, until written consent is received.**
+   This covers every host of both exchanges (websites, APIs, archives such as
+   nsearchives.nseindia.com, RSS feeds) and every method: scripts, the Chrome extension, a
+   headless browser, or `fetch()` from inside a page session. It applies even to one-off
+   investigation or debugging. Reading their terms of use or public documentation pages
+   is fine. Exchange data comes only from files the user downloads by hand into
+   `data/filings/inbox/`.
 
 ## Code style
 
