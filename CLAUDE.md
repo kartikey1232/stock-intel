@@ -27,8 +27,23 @@ uv sync                    # install dependencies
 uv add <pkg>               # add a dependency (never edit pyproject by hand for deps)
 uv run pytest              # run all tests
 uv run pytest path/to/test_file.py::test_name   # run a single test
-uv run streamlit run <app.py>                   # launch the dashboard
+uv run ruff check . && uv run ruff format .     # lint + format
+uv run python run_update.py                     # collect prices, then compute indicators
+uv run python -m collectors.prices              # prices only
+uv run python -m processing.indicators [--full] # indicators only
+uv run streamlit run dashboard.py               # launch the dashboard
 ```
+
+## Gotchas
+
+- yfinance never raises on failure; it returns an empty frame. Collectors must decide
+  what "empty" means (first run = error, incremental = no new data).
+- Yahoo inserts filler bars on NSE holidays (zero volume, flat OHLC); the price collector
+  drops them.
+- pandas-ta 0.4 emits RSI from bar 2; `processing/indicators.py` masks the warm-up.
+  pandas-ta is a beta release pinned in `uv.lock`, and it caps numpy at 2.2 via numba.
+- Tests must never hit the network or the real database; use a tmp SQLite engine and
+  monkeypatch `storage.db.get_engine`.
 
 ## Architecture principles (non-negotiable)
 

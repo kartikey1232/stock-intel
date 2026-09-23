@@ -1,0 +1,37 @@
+# Stocks tracked by stock-intel.
+#   symbol:  NSE trading symbol
+#   yf:      Yahoo Finance ticker (.NS = NSE, .BO = BSE)
+#   aliases: names the company appears under in news (used for news/social matching)
+
+stocks:
+  - symbol: RELIANCE
+    yf: RELIANCE.NS
+    name: Reliance Industries Ltd
+    sector: Energy
+    aliases: [Reliance Industries, Reliance, RIL, Jio, Reliance Retail]
+
+  - symbol: TCS
+    yf: TCS.NS
+    name: Tata Consultancy Services Ltd
+    sector: Information Technology
+    aliases: [Tata Consultancy Services, TCS]
+
+  - symbol: HDFCBANK
+    yf: HDFCBANK.NS
+    name: HDFC Bank Ltd
+    sector: Financial Services
+    aliases: [HDFC Bank, HDFC]
+
+  - symbol: INFY
+    yf: INFY.NS
+    name: Infosys Ltd
+    sector: Information Technology
+    aliases: [Infosys, Infy]
+
+  # Formerly TATAMOTORS. After the Oct 2025 demerger the original listing continues as
+  # Tata Motors Passenger Vehicles (TMPV); the CV business trades separately as TMCV.
+  - symbol: TMPV
+    yf: TMPV.NS
+    name: Tata Motors Passenger Vehicles Ltd
+    sector: Automobile
+    aliases: [Tata Motors Passenger Vehicles, TMPV, Tata Motors, TATAMOTORS, Jaguar Land Rover, JLR]
