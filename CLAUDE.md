@@ -184,8 +184,12 @@ uv run streamlit run dashboard.py               # launch the dashboard
   rebuilt from stored files on every run.
 - XBRL: elements are matched by local name (prefixes differ between taxonomies). Values are
   absolute INR, divided by 1e7 for crore. Q4 filings also contain full-year contexts, so
-  the parser only accepts ~3-month contexts. Bank XBRL tag names in `XBRL_TAGS` are
-  UNVERIFIED until a real HDFC Bank XBRL is imported.
+  the parser only accepts ~3-month contexts. Bank tags in `XBRL_TAGS` are verified against
+  HDFC Bank's FY27Q1 files: net NPA is `NonPerformingAssets` (no "Net"), NPA ratios are
+  fractions (0.0117, stored as 1.17 %), and consolidated `ProfitLossForThePeriod` is before
+  minority interest (owners' profit is
+  `ProfitLossAfterTaxesMinorityInterestAndShareOfProfitLossOfAssociates`). Consolidated
+  bank files put 0 in the NPA fields; those placeholders are dropped.
 - HDFC Bank's PDFs are scanned images with an OCR text layer: expect "eamed", "18187 49"
   (lost decimal), "3170830,09" (decimal comma). `repair_ocr_numbers` handles these. Some
   PDFs (Q4 FY26, Q1 FY25) have no text layer at all and are skipped; some links 404

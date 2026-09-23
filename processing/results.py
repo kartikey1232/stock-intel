@@ -13,7 +13,9 @@ header), EPS in ₹ per share, NPA ratios in percent, other XBRL ratios as repor
 
 Headline metrics: revenue, total_income, net_profit (attributable to owners where the
 filing splits it), eps (basic), and for banks interest_earned, interest_expended, nii
-(interest earned - interest expended), gross_npa, net_npa, gross_npa_pct, net_npa_pct.
+(interest earned - interest expended), provisions (other than tax, and contingencies),
+gross_npa, net_npa, gross_npa_pct, net_npa_pct. Bank consolidated XBRL fills the NPA fields
+with 0 (they're reported standalone only); those placeholders are dropped.
 
 Validation flags a headline value that moves more than 5x (up or down) from the previous
 quarter, or changes sign where that shouldn't happen (revenue, income, NII, NPAs); a
@@ -57,18 +59,21 @@ POSITIVE_METRICS = {"revenue", "total_income", "interest_earned", "nii", "gross_
 SIGN_CHECK_METRICS = {"net_profit", "eps"}
 HEADLINE = (
     "revenue", "total_income", "net_profit", "eps", "interest_earned", "interest_expended",
-    "nii", "gross_npa", "net_npa", "gross_npa_pct", "net_npa_pct",
+    "nii", "provisions", "gross_npa", "net_npa", "gross_npa_pct", "net_npa_pct",
 )  # fmt: skip
+NPA_METRICS = ("gross_npa", "net_npa", "gross_npa_pct", "net_npa_pct")
 
 # XBRL local names per headline metric, first match wins. The non-bank names are verified
-# against a real NSE integrated-filing file; the bank names are unverified until a bank
-# (HDFC Bank) XBRL file is imported. Unmatched bank filings are logged.
+# against a real NSE integrated-filing file, the bank names against HDFC Bank's FY27Q1
+# standalone and consolidated XBRL. Bank filings without the bank tags are logged.
 XBRL_TAGS = {
     "revenue": ["RevenueFromOperations"],
     "total_income": ["Income", "TotalIncome"],
     "net_profit": [
         "ProfitOrLossAttributableToOwnersOfParent",
         "ProfitLossForPeriodAttributableToOwnersOfParent",
+        # Banks: ProfitLossForThePeriod is before minority interest in consolidated filings.
+        "ProfitLossAfterTaxesMinorityInterestAndShareOfProfitLossOfAssociates",
         "ProfitLossForPeriod",
         "ProfitLossForThePeriod",
     ],
@@ -79,8 +84,9 @@ XBRL_TAGS = {
     ],
     "interest_earned": ["InterestEarned"],
     "interest_expended": ["InterestExpended"],
+    "provisions": ["ProvisionsOtherThanTaxAndContingencies"],
     "gross_npa": ["GrossNonPerformingAssets", "AmountOfGrossNonPerformingAssets"],
-    "net_npa": ["NetNonPerformingAssets", "AmountOfNetNonPerformingAssets"],
+    "net_npa": ["NonPerformingAssets", "NetNonPerformingAssets", "AmountOfNetNonPerformingAssets"],
     "gross_npa_pct": ["PercentageOfGrossNpa", "PercentageOfGrossNonPerformingAssets"],
     "net_npa_pct": ["PercentageOfNpa", "PercentageOfNetNonPerformingAssets"],
 }
@@ -201,8 +207,14 @@ def parse_xbrl(content: bytes) -> ParsedResult:
     parsed.values = {f"x:{n}": v for n, v in numeric.items()}
     for metric, tags in XBRL_TAGS.items():
         tag = next((t for t in tags if t in numeric), None)
-        if tag:
-            parsed.values[metric] = numeric[tag]
+        if tag is None:
+            continue
+        value, unit = numeric[tag]
+        if metric in NPA_METRICS and value == 0:
+            continue  # placeholder: banks report NPAs in standalone results only
+        if metric.endswith("_pct") and unit == "pure":
+            value, unit = value * 100, "%"  # XBRL states 1.17% as 0.0117
+        parsed.values[metric] = (value, unit)
     _add_nii(parsed.values)
     return parsed
 
@@ -240,12 +252,16 @@ APPROVAL_RE = re.compile(  # "results have been approved by the Board ... held o
 )
 UNIT_RE = re.compile(r"in\s+(crores?|lakhs?|lacs?|thousands?|millions?)\s*\)", re.IGNORECASE)
 UNIT_TO_CRORE = {"crore": 1.0, "lakh": 0.01, "lac": 0.01, "thousand": 1e-4, "million": 0.1}
+NOTE_REF_RE = re.compile(  # "(Refer note 8)", "(Note 3)", "(refer notes 4 and 5)"
+    r"\((?:refer\s+)?notes?\s*\d+(?:\s*(?:,|&|and)\s*\d+)*\s*\)", re.IGNORECASE
+)
 NUMBER_RE = re.compile(r"\(?-?\d[\d,]*(?:\.\d+)?\)?%?")
 PDF_ROWS = {  # metric -> label regex; the last matching row in a section wins for net_profit
     "revenue": r"revenue from operations",
     "total_income": r"^\W*\d*\s*total income",
     "interest_earned": r"interest ea(?:r|m)n?ed",
     "interest_expended": r"interest expended",
+    "provisions": r"provisions \(other than tax\) and contingencies",
     "net_profit": r"net profit.*for the period(?!.*before minority)",
     "eps": r"\(a\)\s*basic|^\W*basic",
     "gross_npa": r"\(a\)\s*gross npa",
@@ -266,7 +282,12 @@ def repair_ocr_numbers(line: str) -> str:
 
 
 def _numbers(line: str) -> list[float]:
-    """Numbers at the end of a results row, in column order. (x) and "(x" are negative."""
+    """Numbers at the end of a results row, in column order. (x) and "(x" are negative.
+
+    Note references in the label ("(Refer note 8)") are removed first, or "8)" would be
+    read as the first column.
+    """
+    line = NOTE_REF_RE.sub(" ", line)
     values = []
     for token in reversed(repair_ocr_numbers(line).split()):
         if not NUMBER_RE.fullmatch(token):

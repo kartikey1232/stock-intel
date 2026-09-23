@@ -2,7 +2,8 @@
 
 The XBRL fixtures are SYNTHETIC: they follow the structure of a real NSE integrated-filing
 instance (in-capmkt taxonomy, INR in absolute rupees, quarter + year contexts) but the
-numbers are made up. The PDF fixtures are page texts laid out like HDFC Bank's results,
+numbers are made up. The bank element names are copied from HDFC Bank's real FY27Q1
+standalone and consolidated XBRL. The PDF fixtures are page texts laid out like HDFC Bank's results,
 including its OCR slips, again with made-up numbers.
 """
 
@@ -84,6 +85,7 @@ Particulars 30.06.2026 31.03.2026 30.06.2025 31.03.2026
 Interest eamed (a)+(b)+(c)+(d) 70000.50 69000.00 65000.00 270000.00
 3 Total Income (1)+(2) 80000 25 79000.00 76000.00 310000.00
 4 Interest expended 40000,50 39000.00 38000.00 150000.00
+8 Provisions (other than tax) and Contingencies (Refer note 8) 3000.00 2600.00 14000.00 23000.00
 14 Net Profit for the period (12)-(13) 15000.10 14800.00 14000.00 58000.00
 (a) Basic EPS before & after extraordinary items (net of tax 10.10 9.90 9.40 38.00
 (a) Gross NPAS 30000.00 29000.00 28000.00 29000.00
@@ -151,6 +153,59 @@ def test_consolidated_basis_and_owner_profit_preferred() -> None:
     assert p.values["net_profit"][0] == pytest.approx(7000.0)
 
 
+def bank_facts(values: dict[str, float]) -> str:
+    return "".join(
+        f'<in-capmkt:{tag} contextRef="OneD" unitRef="{"pure" if v < 1 else "INR"}">{v:.4f}'
+        f"</in-capmkt:{tag}>"
+        for tag, v in values.items()
+    )
+
+
+BANK_COMMON = {  # absolute INR, as in the real files
+    "InterestEarned": 800_000_000_000,
+    "InterestExpended": 450_000_000_000,
+    "Income": 920_000_000_000,
+    "ProvisionsOtherThanTaxAndContingencies": 30_000_000_000,
+}
+
+
+def test_bank_standalone_xbrl_tags() -> None:
+    extra = bank_facts({
+        **BANK_COMMON,
+        "GrossNonPerformingAssets": 358_000_000_000,
+        "NonPerformingAssets": 123_000_000_000,  # net NPA: no "Net" in the element name
+        "PercentageOfGrossNpa": 0.0117,
+        "PercentageOfNpa": 0.0041,
+    })  # fmt: skip
+    p = res.parse_xbrl(xbrl(symbol="HDFCBANK", extra=extra))
+    v = {k: val for k, (val, _) in p.values.items()}
+    assert v["nii"] == pytest.approx(35000.0)
+    assert v["provisions"] == pytest.approx(3000.0)
+    assert (v["gross_npa"], v["net_npa"]) == pytest.approx((35800.0, 12300.0))
+    # ratios are fractions in XBRL, percent in the PDFs and the results table
+    assert (v["gross_npa_pct"], v["net_npa_pct"]) == pytest.approx((1.17, 0.41))
+    assert p.values["gross_npa_pct"][1] == "%"
+
+
+def test_bank_consolidated_xbrl_profit_after_minority_and_no_npa_placeholders() -> None:
+    extra = bank_facts({
+        **BANK_COMMON,
+        "ProfitLossForThePeriod": 203_800_000_000,  # before minority interest
+        "ProfitLossAfterTaxesMinorityInterestAndShareOfProfitLossOfAssociates": 192_400_000_000,
+    }) + (
+        '<in-capmkt:GrossNonPerformingAssets contextRef="OneD" unitRef="INR">0'
+        '</in-capmkt:GrossNonPerformingAssets>'
+        '<in-capmkt:PercentageOfNpa contextRef="OneD" unitRef="pure">0</in-capmkt:PercentageOfNpa>'
+    )  # fmt: skip
+    xml = xbrl(symbol="HDFCBANK", nature="Consolidated", extra=extra)
+    xml = xml.replace(b"<in-capmkt:ProfitLossForPeriod ", b"<in-capmkt:Unused ").replace(
+        b"</in-capmkt:ProfitLossForPeriod>", b"</in-capmkt:Unused>"
+    )
+    p = res.parse_xbrl(xml)
+    assert p.values["net_profit"][0] == pytest.approx(19240.0)
+    assert not {"gross_npa", "net_npa_pct"} & p.values.keys()  # zeros are placeholders
+
+
 def test_non_xbrl_xml_is_rejected() -> None:
     with pytest.raises(res.ResultParseError, match="not an XBRL instance"):
         res.parse_xbrl(b"<?xml version='1.0'?><rss></rss>")
@@ -170,6 +225,9 @@ def test_non_xbrl_xml_is_rejected() -> None:
          [-589.46, -591.22, -581.38, -2364.43]),
         ("Total 1,049.19 7,67,70,39,761", [1049.19, 7677039761.0]),
         ("% of Gross NPAs 1.17% 1.15%", [1.17, 1.15]),
+        ("8 Provisions (other than tax) and Contingencies (Refer note 8) 3059.76 2609.57",
+         [3059.76, 2609.57]),
+        ("Tax expense (refer notes 4 and 5) (12.50) 3.00", [-12.5, 3.0]),
     ],
 )  # fmt: skip
 def test_ocr_number_repair(line: str, numbers: list[float]) -> None:
@@ -185,6 +243,7 @@ def test_bank_pdf_headline_rows() -> None:
     assert v["total_income"] == 80000.25  # "80000 25" repaired
     assert v["interest_expended"] == 40000.50  # "40000,50" repaired
     assert v["nii"] == pytest.approx(30000.0)
+    assert v["provisions"] == 3000.00  # not the 8 from "(Refer note 8)"
     assert (v["net_profit"], v["eps"], v["gross_npa_pct"], v["net_npa_pct"]) == (
         15000.10, 10.10, 1.20, 0.40)  # fmt: skip
     assert standalone.values["gross_npa_pct"][1] == "%"
