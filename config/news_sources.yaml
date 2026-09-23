@@ -1,0 +1,74 @@
+# News sources for collectors/news.py. Every feed below was checked on 2026-09-23 and
+# returned current entries.
+#
+# Checked and NOT used:
+#   - Moneycontrol (/rss/*.xml): HTTP 200 but frozen -- newest items Apr 2024 (MCtopnews:
+#     Oct 2016); marketoutlook.xml returns 502.
+#   - Business Standard (/rss/*.rss): HTTP 403 for non-browser clients. We don't spoof a
+#     browser User-Agent; Business Standard stories still arrive via Google News.
+
+user_agent: "stock-intel/0.1 (personal market research; RSS reader; python-httpx)"
+timeout_s: 20
+
+# Minimum seconds between requests to the same domain.
+rate_limits:
+  default: 1.5
+  news.google.com: 3.0
+
+google_news:
+  url: https://news.google.com/rss/search
+  params: {hl: en-IN, gl: IN, ceid: "IN:en"}
+  window: 7d   # appended to each query as when:7d
+
+feeds:
+  - name: et_markets
+    publisher: The Economic Times
+    url: https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms
+  - name: et_stocks_news
+    publisher: The Economic Times
+    url: https://economictimes.indiatimes.com/markets/stocks/news/rssfeeds/2146843.cms
+  - name: mint_markets
+    publisher: Mint
+    url: https://www.livemint.com/rss/markets
+  - name: mint_companies
+    publisher: Mint
+    url: https://www.livemint.com/rss/companies
+
+# Full-text extraction (collectors/article_text.py).
+article_text:
+  max_attempts: 3    # after this many failed attempts an article is marked 'failed'
+  min_chars: 300     # extracted text shorter than this counts as a failed extraction
+  # Site furniture that trafilatura keeps: whole lines matching these regexes (at line
+  # start) are dropped. ET's "Top Trending Stocks: ... HDFC Bank ..., Infosys ..." footer
+  # would otherwise make every ET article look like it mentions those companies.
+  # After editing, apply to stored text with: uv run python -m collectors.article_text --reclean
+  boilerplate:
+    "*":
+      - '\(?Disclaimer:'
+      - 'Read more:'     # links to other stories: would add false company mentions
+      - 'Also [Rr]ead\s*[:|]'
+    economictimes.indiatimes.com:
+      - 'Top Trending Stocks:'
+      - 'Subscribe to ET Prime'
+      - "\\(What's moving Sensex and Nifty"
+      - 'Listen to this article in summarized format'
+      - 'ETMarkets\.com$'
+    www.livemint.com:
+      - 'Catch all the Business News'
+
+# Grouping syndicated copies of one story (processing/stories.py).
+stories:
+  similarity_threshold: 90   # rapidfuzz token-set ratio (0-100) on normalised titles
+  window_hours: 48           # only articles this close in time can be the same story
+  min_tokens: 6              # shorter titles use the stricter token-sort ratio instead
+
+# News sentiment (processing/sentiment.py).
+sentiment:
+  model: ProsusAI/finbert
+  # Pinned model commit so scores are reproducible. To upgrade, change this, then
+  # rescore (new scores are stored under the same model name, so delete the old
+  # article_sentiment rows for it first).
+  revision: 4556d13015211d73dccd3fdd39d39232506f3e43
+  batch_size: 16
+  max_sentences: 6            # mention sentences scored alongside the title
+  strong_negative: -0.5       # a story at or below this score counts as strongly negative

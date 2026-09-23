@@ -1,37 +1,94 @@
 # Stocks tracked by stock-intel.
 #   symbol:  NSE trading symbol
 #   yf:      Yahoo Finance ticker (.NS = NSE, .BO = BSE)
-#   aliases: names the company appears under in news (used for news/social matching)
+#   aliases: names that always count as a mention of the company (news/social matching).
+#            All-uppercase aliases (RIL, TCS) match case-sensitively; others ignore case.
+#   news_terms: optional; exact phrases for the Google News query (OR'd together).
+#               Defaults to the name without "Ltd" plus the first alias. Set it when an
+#               alias is ambiguous in Indian news.
+#   ambiguous_aliases: optional; names that only count with finance context (share,
+#               stock, results, NSE, Nifty...) in the same sentence.
+#   exclude_patterns: optional; phrases removed before matching (other companies that
+#               share a name). Only the phrase itself is removed, so other mentions in
+#               the same text still count.
+#   conditional_aliases: optional; names that need specific context in the same
+#               sentence, from a given date on (before it they are ordinary aliases).
 
 stocks:
   - symbol: RELIANCE
     yf: RELIANCE.NS
     name: Reliance Industries Ltd
     sector: Energy
-    aliases: [Reliance Industries, Reliance, RIL, Jio, Reliance Retail]
+    aliases: [Reliance Industries, RIL, Jio, Reliance Retail]
+    news_terms: [Reliance Industries, RIL]
+    ambiguous_aliases: [Reliance]  # bare "Reliance" is also Reliance Power, Infra, Capital...
+    exclude_patterns:
+      - Reliance Power
+      - Reliance Infrastructure
+      - Reliance Infra
+      - Reliance Capital
+      - Reliance Communications
+      - Reliance Home Finance
+      - Reliance General Insurance
+      - Reliance Nippon
+      # Jio Financial Services is separately listed (JIOFIN)
+      - Jio Financial Services
+      - Jio Financial
+      - JFSL
+      - Jio BlackRock
 
   - symbol: TCS
     yf: TCS.NS
     name: Tata Consultancy Services Ltd
     sector: Information Technology
     aliases: [Tata Consultancy Services, TCS]
+    news_terms: [Tata Consultancy Services, TCS shares, TCS stock]
+    exclude_patterns:  # TCS also means "tax collected at source"
+      - tax collected at source (TCS)
+      - tax collected at source
+      - TDS/TCS
+      - TDS and TCS
+      - TCS on foreign
+      - TCS on LRS
+      - TCS rate
 
   - symbol: HDFCBANK
     yf: HDFCBANK.NS
     name: HDFC Bank Ltd
     sector: Financial Services
-    aliases: [HDFC Bank, HDFC]
+    aliases: [HDFC Bank]
+    news_terms: [HDFC Bank]
+    ambiguous_aliases: [HDFC]
+    exclude_patterns: [HDFC Life, HDFC AMC, HDFC Securities, HDFC Mutual Fund]
 
   - symbol: INFY
     yf: INFY.NS
     name: Infosys Ltd
     sector: Information Technology
     aliases: [Infosys, Infy]
+    exclude_patterns:  # people and philanthropy, not the company
+      - Infosys co-founder
+      - Infosys founder
+      - former Infosys
+      - ex-Infosys
+      - Infosys Foundation
+      - Infosys Prize
+      - Infosys Science Foundation
 
   # Formerly TATAMOTORS. After the Oct 2025 demerger the original listing continues as
-  # Tata Motors Passenger Vehicles (TMPV); the CV business trades separately as TMCV.
+  # Tata Motors Passenger Vehicles (TMPV); the CV business trades separately as TMCV
+  # under the name "Tata Motors Ltd".
   - symbol: TMPV
     yf: TMPV.NS
     name: Tata Motors Passenger Vehicles Ltd
     sector: Automobile
-    aliases: [Tata Motors Passenger Vehicles, TMPV, Tata Motors, TATAMOTORS, Jaguar Land Rover, JLR]
+    aliases: [Tata Motors Passenger Vehicles, TMPV, Jaguar Land Rover, JLR]
+    news_terms: [Tata Motors Passenger Vehicles, TMPV, Jaguar Land Rover]
+    exclude_patterns: [Tata Motors CV, Tata Motors Commercial Vehicles, TMCV]
+    conditional_aliases:
+      # From the demerger ex-date, bare "Tata Motors" is the CV company unless the
+      # sentence is about passenger vehicles.
+      - names: [Tata Motors, TATAMOTORS]
+        from: 2025-10-14
+        context: [passenger vehicle, PV, cars, EV, JLR, Jaguar Land Rover, Nexon, Punch,
+                  Harrier, Safari, Curvv, Tiago]

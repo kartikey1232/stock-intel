@@ -6,14 +6,19 @@ readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "apscheduler>=3.11.3",
+    "feedparser>=6.0.14",
     "httpx>=0.28.1",
     "pandas>=3.0.6",
     "pandas-ta>=0.4.71b0",
     "plotly>=7.1.0",
     "python-dotenv>=1.2.3",
     "pyyaml>=6.0.3",
+    "rapidfuzz>=3.14.6",
     "sqlalchemy>=2.0.54",
     "streamlit>=1.64.0",
+    "torch>=2.14.0",
+    "trafilatura>=2.2.0",
+    "transformers>=5.17.0",
     "yfinance>=1.7.0",
 ]
 
@@ -32,3 +37,13 @@ select = ["E", "F", "W", "I", "B", "UP", "DTZ"]  # DTZ flags naive datetimes (we
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+# CPU-only PyTorch on every platform: without this, Linux resolves torch's CUDA build,
+# which pulls in multi-gigabyte nvidia-* packages we never use.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu" }]

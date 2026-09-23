@@ -106,3 +106,98 @@ def test_metrics_on_adjusted_prices_remove_the_demerger_high() -> None:
     raw_high = dashboard.compute_metrics(df).high_52w
     adjusted = adjust_prices(df, actions_df(factor=0.5))
     assert dashboard.compute_metrics(adjusted).high_52w < raw_high / 1.8
+
+
+# --- news --------------------------------------------------------------------------
+
+IST = dashboard.IST
+NEWS_CALENDAR = dashboard.TradingCalendar([dt.date(2026, 9, d) for d in (18, 21, 22, 23)])
+
+
+def linked_articles(*rows) -> pd.DataFrame:
+    """(article_id, story_id, source, IST hour on 21 Sep, score)."""
+    return pd.DataFrame(
+        [
+            {
+                "article_id": aid,
+                "title": f"Headline {aid}",
+                "url": f"https://x.com/{aid}",
+                "source": source,
+                "story_id": story,
+                "published_at": dt.datetime(2026, 9, 21, hour, tzinfo=IST),
+                "first_seen_at": dt.datetime(2026, 9, 21, hour, 30, tzinfo=IST),
+                "confidence": 0.95,
+                "label": None,
+                "score": score,
+            }
+            for aid, story, source, hour, score in rows
+        ]
+    )
+
+
+def test_news_items_collapse_stories_and_count_other_sources() -> None:
+    articles = linked_articles(
+        ("a1", "s1", "Mint", 10, 0.6),
+        ("a2", "s1", "ET", 11, 0.2),
+        ("b1", None, "Upstox", 17, -0.5),
+    )
+    sources = pd.DataFrame(
+        {"story_id": ["s1", "s1", "s1"], "source": ["Mint", "ET", "NDTV Profit"]}
+    )  # NDTV carried it too but isn't linked to this stock
+    items = dashboard.news_items(articles, sources, NEWS_CALENDAR)
+
+    assert items["article_id"].tolist() == ["b1", "a1"]  # newest first, earliest copy shown
+    story = items.set_index("article_id").loc["a1"]
+    assert story["more_sources"] == 2
+    assert story["score"] == pytest.approx(0.4)
+    assert story["session_date"] == dt.date(2026, 9, 21)
+    after_close = items.set_index("article_id").loc["b1"]
+    assert (after_close["more_sources"], after_close["session_date"]) == (0, dt.date(2026, 9, 22))
+
+
+def test_news_items_handles_no_news() -> None:
+    empty = linked_articles().reindex(
+        columns=["article_id", "story_id", "source", "published_at", "first_seen_at", "score"]
+    )
+    assert dashboard.news_items(
+        empty, pd.DataFrame(columns=["story_id", "source"]), NEWS_CALENDAR
+    ).empty
+
+
+@pytest.mark.parametrize(
+    ("score", "badge"),
+    [(0.6, "green-badge"), (-0.4, "red-badge"), (0.1, "gray-badge[neutral"), (None, "unscored")],
+)
+def test_sentiment_badge(score, badge: str) -> None:
+    assert badge in dashboard.sentiment_badge(score)
+
+
+def test_escape_markdown_neutralises_links_and_latex() -> None:
+    assert dashboard.escape_markdown("Q2 [update] $5bn") == "Q2 \\[update\\] \\$5bn"
+
+
+def test_sentiment_averages_are_story_weighted() -> None:
+    daily = pd.DataFrame(
+        {
+            "session_date": [dt.date(2026, 9, 1), dt.date(2026, 9, 21), dt.date(2026, 9, 22)],
+            "weighted_score": [-0.8, 0.5, -0.1],
+            "story_count": [4, 3, 1],
+        }
+    )
+    avg7, avg30 = dashboard.sentiment_averages(daily, dt.date(2026, 9, 23))
+    assert avg7 == pytest.approx((0.5 * 3 - 0.1) / 4)
+    assert avg30 == pytest.approx((-0.8 * 4 + 0.5 * 3 - 0.1) / 8)
+    assert dashboard.sentiment_averages(daily.iloc[0:0], dt.date(2026, 9, 23)) == (None, None)
+
+
+def test_figure_adds_news_panel_on_shared_axis() -> None:
+    news = pd.DataFrame(
+        {"session_date": [dt.date(2026, 9, 21)], "weighted_score": [0.3], "story_count": [4]}
+    )
+    fig = dashboard.build_figure(history(), "TEST", news=news)
+    names = {t.name for t in fig.data}
+    assert {"Stories", "Sentiment"} <= names
+    sentiment = next(t for t in fig.data if t.name == "Sentiment")
+    assert sentiment.xaxis == "x5"
+    # shared_xaxes links every other panel's x-axis to the bottom (news) one
+    assert [fig.layout[f"xaxis{i}"].matches for i in ("", 2, 3, 4)] == ["x5"] * 4

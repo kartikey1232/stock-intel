@@ -3,8 +3,8 @@
 A personal stock intelligence tool for Indian markets (NSE/BSE). It collects daily prices
 from Yahoo Finance, computes technical indicators, and shows them in a Streamlit dashboard.
 
-**Current status:** Phase 1 (prices + indicators) is complete. News sentiment, exchange
-filings, social signals, backtesting and Telegram alerts are planned. See [Roadmap](#roadmap).
+**Current status:** Phases 1 (prices + indicators) and 2 (news + sentiment) are complete.
+Exchange filings, social signals, backtesting and Telegram alerts are planned. See [Roadmap](#roadmap).
 
 ## Setup
 
@@ -23,12 +23,18 @@ cp .env.example .env
 
 ## Running the update
 
-One command downloads new prices and recomputes indicators for every stock in the
-watchlist:
+One command updates everything for every stock in the watchlist: prices and
+indicators, then the news pipeline (collect articles, extract text, group stories, link
+articles to stocks, score sentiment, build daily aggregates):
 
 ```bash
-uv run python run_update.py
+uv run python run_update.py               # everything
+uv run python run_update.py --skip-news   # prices and indicators only
 ```
+
+The first run with news downloads the FinBERT model (~440 MB, a few minutes). A news
+failure never blocks price updates, and each news step runs even if an earlier one
+failed. The exit code is `1` if anything failed.
 
 - **First run** downloads 5 years of daily history (about 15 seconds for 5 stocks).
 - **Later runs** fetch only from the last stored date onward, and indicators are
@@ -50,6 +56,57 @@ uv run python run_update.py --full-indicators   # both, with a full indicator re
 
 Logs go to the console and to `logs/stock_intel.log` (rotating, UTC timestamps).
 
+## Collecting news
+
+```bash
+uv run python -m collectors.news
+```
+
+This fetches Google News (one India-edition query per stock) plus publisher RSS feeds
+from Economic Times and Mint, and stores raw articles in the `articles` table. Articles
+are keyed by a hash of the cleaned-up URL (tracking parameters, fragments and trailing
+slashes removed), so re-running only adds new ones. Each article records `published_at`
+(from the feed, which can be wrong) and `first_seen_at` (when we first fetched it).
+Requests are rate-limited per domain and retried on network errors, 429 and 5xx.
+
+Sources live in [`config/news_sources.yaml`](config/news_sources.yaml). A stock's Google
+query uses its `news_terms` from the watchlist, or its name and first alias.
+
+Then fetch article text and group duplicates:
+
+```bash
+uv run python -m collectors.article_text   # full text for articles still 'pending'
+uv run python -m processing.stories        # assign story_id to new articles
+uv run python -m processing.entities       # link articles to the stocks they're about
+uv run python -m processing.sentiment --report   # FinBERT sentiment + daily per-stock scores
+```
+
+- **Text extraction** fetches each page (respecting robots.txt and per-domain rate
+  limits) and extracts the main text with trafilatura, dropping site boilerplate lines
+  listed in the config. Each article ends up `ok`, `paywalled` (text left empty; title and
+  summary kept), `skipped` (Google News link or disallowed by robots.txt) or `failed`.
+  Transient failures are retried on later runs, at most 3 attempts in total.
+- **Story grouping** gives copies of the same story (syndicated or rewritten by other
+  outlets within 48 hours) a shared `story_id`, using title similarity. Nothing is
+  deleted. Count stories, not articles, so one wire report doesn't look like five.
+  The threshold is `stories.similarity_threshold` in the config.
+- **Entity linking** decides which watchlist stocks each article is about, using the
+  name rules in the watchlist. It skips other companies that share a name (HDFC Life,
+  Reliance Power), requires finance context for ambiguous names like "HDFC", and applies
+  date-aware rules (after the demerger, bare "Tata Motors" counts for TMPV only when the
+  sentence is about passenger vehicles). Each match gets a confidence: a title mention
+  scores highest, a single mention in a long article lowest, and stocks listed in market
+  wraps score low. A labelled set of 49 headlines checks it
+  (`uv run python -m processing.entities --evaluate`).
+- **Sentiment** scores each article–stock link with FinBERT (ProsusAI/finbert, pinned
+  commit, CPU). The input is the headline plus only the sentences that mention the stock.
+  `score` = P(positive) − P(negative), from −1 to 1. The model (~440 MB) downloads on
+  first run and is loaded from the local cache afterwards.
+- **Daily aggregates** (`news_daily`) summarise each stock per IST trading session:
+  story and article counts, mean and confidence-weighted score, and strongly negative
+  stories. Copies of a story count once. News after 15:30 IST or on a non-trading day
+  counts towards the next session.
+
 ## Dashboard
 
 ```bash
@@ -64,9 +121,21 @@ Opens at <http://localhost:8501>. Pick a stock and date range in the sidebar. Th
   visible range, it is marked on the chart and explained below it.
 - **Price chart:** candlesticks with SMA 50/200 and Bollinger Bands, plus volume.
 - **RSI** (with 30/70 levels) and **MACD** (with histogram) panels.
+- **News sentiment panel:** daily story-weighted sentiment (line, −1 to +1) and story
+  count (bars) per trading session, on the same date axis as the price chart.
+- **News sentiment card:** 7-day average compared with the 30-day average.
+- **News list** for the selected range: linked headline, source, IST time, sentiment
+  badge, and "+N more sources" when other outlets carried the same story.
 
 Data is cached for 5 minutes. Use **Reload from database** in the sidebar after running an
 update.
+
+## Data use
+
+Article text is fetched and stored **locally, for personal analysis only**. It belongs
+to the publishers: don't republish it, share the database, or expose the text through a
+public service. Collection respects robots.txt and rate limits, and paywalled articles
+are never extracted.
 
 ## Configuration
 
@@ -100,7 +169,11 @@ shows no gap), and recording one of those would adjust it twice.
   yf: INFY.NS             # Yahoo ticker: .NS for NSE, .BO for BSE
   name: Infosys Ltd
   sector: Information Technology
-  aliases: [Infosys, Infy]   # names used in news (for Phase 2 matching)
+  aliases: [Infosys, Infy]   # names that always count as a mention
+  news_terms: [Infosys]      # optional: exact phrases for the Google News query
+  ambiguous_aliases: []      # optional: names needing finance context (e.g. HDFC)
+  exclude_patterns: [Infosys Foundation]   # optional: phrases that never count
+  conditional_aliases: []    # optional: names needing specific context from a date on
 ```
 
 The file is validated on load. Missing, unknown or duplicate fields raise a clear error.
@@ -125,15 +198,23 @@ New stocks get their full 5-year history on the next update.
 │   ├── watchlist.yaml     # Stocks to track
 │   ├── loader.py          # Loads and validates the watchlist
 │   ├── corporate_actions.yaml  # Splits/bonuses/demergers (reviewed in git)
-│   └── corporate_actions.py    # Loads and validates corporate actions
+│   ├── corporate_actions.py    # Loads and validates corporate actions
+│   ├── news_sources.yaml  # RSS feeds, Google News settings, rate limits
+│   └── news_sources.py    # Loads and validates news sources
 ├── collectors/            # Fetch and store RAW data only (no analysis)
-│   └── prices.py          # Daily OHLCV from Yahoo Finance
+│   ├── prices.py          # Daily OHLCV from Yahoo Finance
+│   ├── news.py            # Raw articles from Google News + publisher RSS
+│   └── article_text.py    # Article full text (trafilatura), robots.txt-aware
 ├── processing/            # Turn raw data into insight (no network calls)
 │   ├── adjustments.py     # Adjusted OHLC + unrecorded-gap detection
+│   ├── stories.py         # Groups syndicated article copies into stories
+│   ├── entities.py        # Links articles to the watchlist stocks they're about
+│   ├── sentiment.py       # FinBERT scoring + daily per-stock aggregates
 │   └── indicators.py      # RSI, MACD, SMA, EMA, Bollinger, ATR via pandas-ta
 ├── storage/
 │   └── db.py              # SQLAlchemy schema, upserts, reads
 ├── utils/
+│   ├── http.py            # Per-domain rate limiter + retried GET
 │   ├── logging_setup.py   # Console + rotating file logging
 │   └── retry.py           # Exponential-backoff retry decorator
 ├── tests/                 # pytest suite (network calls are mocked)
@@ -150,6 +231,17 @@ New stocks get their full 5-year history on the next update.
   adjusted prices.
 - `corporate_actions` (`symbol, ex_date`): action_type, price_factor, source, note.
   A mirror of `config/corporate_actions.yaml`.
+- `articles` (`id` = hash of the cleaned-up URL): url, source, title, summary,
+  published_at, first_seen_at, fetched_via, text, text_status, text_attempts,
+  text_error, story_id, linked_at. The feed fields are written once and never
+  overwritten; text, story and linking fields are filled in by later steps.
+- `article_mentions` (`article_id, symbol`): matched_alias, location (title / summary /
+  body), mention_count, confidence (0-1). A confidence of 0.5 or more means the article
+  is about that stock.
+- `article_sentiment` (`article_id, symbol, model_name`): model_version, label,
+  p_positive, p_negative, p_neutral, score, computed_at.
+- `news_daily` (`symbol, session_date, model_name`): story_count, article_count,
+  mean_score, weighted_score, strong_negative_stories, latest_first_seen_at.
 
 Architecture rules and coding conventions are in [`CLAUDE.md`](CLAUDE.md).
 
@@ -173,13 +265,34 @@ uv run ruff format .       # format
   re-collect.
 - **Dividends are not adjusted**, apart from Yahoo's `adj_close`. Indicators use
   split/demerger-adjusted OHLC, as charting platforms do.
+- **News:**
+  - Google News links are stored as Google redirect URLs, because they can't be resolved
+    reliably to the publisher's URL. The same story can therefore appear twice (via
+    Google and via a publisher feed).
+  - Google caps each query at 100 results; with daily runs and a 7-day window this is
+    rarely hit.
+  - Moneycontrol (frozen feeds) and Business Standard (blocks non-browser clients) are
+    not used directly; their stories arrive through Google News.
+  - Full text is only available for publisher-feed articles (Economic Times, Mint).
+    Google News articles are `skipped` because their links can't be resolved. Paywall
+    detection relies on the schema.org `isAccessibleForFree` flag.
+  - Entity linking is rule-based. Known misses: a bare "Reliance" without finance words
+    ("Ambani says Reliance will invest…"), and share-price pages that still call TMPV
+    "Tata Motors". A stock named after an index term in a headline ("Bank Nifty rises;
+    HDFC Bank jumps 2.5%") is treated as part of a market wrap.
+  - FinBERT scores the tone of the text, not its effect on the stock. "Supplier wins an
+    order from Reliance" reads as positive, and the model was trained on English
+    financial news, not Indian market phrasing.
+  - Story grouping uses titles only. It errs on the side of keeping stories apart (a
+    heavily reworded copy becomes its own story). A known false merge: the alias "HDFC"
+    also matches "HDFC Mutual Fund", so separate mutual-fund lists can group together.
 - **Yahoo Finance** is an unofficial data source. Holiday filler bars (zero volume, flat
   price) are filtered out, but occasional gaps or revisions are possible.
 
 ## Roadmap
 
 1. ✅ Prices + technical indicators
-2. News + sentiment
+2. ✅ News + sentiment
 3. NSE/BSE filings (quarterly results)
 4. Social media signals
 5. Signals & backtesting

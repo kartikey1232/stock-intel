@@ -21,18 +21,24 @@ from sqlalchemy import (
     DateTime,
     Engine,
     Float,
+    Integer,
     String,
     Table,
     Text,
     TypeDecorator,
+    bindparam,
     create_engine,
     delete,
     event,
+    exists,
     func,
+    inspect,
     select,
+    update,
 )
 from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.schema import CreateColumn, CreateIndex
 
 logger = logging.getLogger(__name__)
 
@@ -118,10 +124,102 @@ class CorporateActionRow(Base):
     note: Mapped[str | None] = mapped_column(Text)
 
 
+class Article(Base):
+    """A raw news article as first seen in a feed. Never overwritten once stored.
+
+    `id` is a hash of the normalised URL. `published_at` comes from the feed and may be
+    wrong or missing; `first_seen_at` is when we first fetched it, and is the only
+    timestamp backtests may rely on.
+    """
+
+    __tablename__ = "articles"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    source: Mapped[str | None] = mapped_column(String(255))
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    summary: Mapped[str | None] = mapped_column(Text)
+    published_at: Mapped[dt.datetime | None] = mapped_column(UTCDateTime, index=True)
+    first_seen_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, nullable=False, index=True)
+    fetched_via: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    text: Mapped[str | None] = mapped_column(Text)
+    text_status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    text_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    text_error: Mapped[str | None] = mapped_column(Text)
+    story_id: Mapped[str | None] = mapped_column(String(32), index=True)
+    # When entity linking last ran on this article; reset whenever its text changes.
+    linked_at: Mapped[dt.datetime | None] = mapped_column(UTCDateTime, index=True)
+
+
+class ArticleMention(Base):
+    """A watchlist stock an article is about, with how strongly (processing/entities.py).
+
+    One row per (article, symbol). `location` is the strongest place it was found
+    (title > summary > body); `mention_count` counts matches across all locations.
+    """
+
+    __tablename__ = "article_mentions"
+
+    article_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(32), primary_key=True, index=True)
+    matched_alias: Mapped[str] = mapped_column(String(255), nullable=False)
+    location: Mapped[str] = mapped_column(String(16), nullable=False)
+    mention_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+
+
+class ArticleSentiment(Base):
+    """Sentiment of an article towards one stock, per model (processing/sentiment.py).
+
+    Keyed by model_name so another model can be added alongside without overwriting.
+    model_version is the exact model revision (commit hash) used.
+    """
+
+    __tablename__ = "article_sentiment"
+
+    article_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(32), primary_key=True)
+    model_name: Mapped[str] = mapped_column(String(128), primary_key=True)
+    model_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    label: Mapped[str] = mapped_column(String(16), nullable=False)
+    p_positive: Mapped[float] = mapped_column(Float, nullable=False)
+    p_negative: Mapped[float] = mapped_column(Float, nullable=False)
+    p_neutral: Mapped[float] = mapped_column(Float, nullable=False)
+    score: Mapped[float] = mapped_column(Float, nullable=False)  # p_positive - p_negative
+    computed_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, nullable=False)
+
+
+class NewsDaily(Base):
+    """Per-stock news sentiment for one IST trading session, counted by story."""
+
+    __tablename__ = "news_daily"
+
+    symbol: Mapped[str] = mapped_column(String(32), primary_key=True)
+    session_date: Mapped[dt.date] = mapped_column(Date, primary_key=True)
+    model_name: Mapped[str] = mapped_column(String(128), primary_key=True)
+    story_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    article_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    mean_score: Mapped[float] = mapped_column(Float, nullable=False)
+    weighted_score: Mapped[float] = mapped_column(Float, nullable=False)
+    strong_negative_stories: Mapped[int] = mapped_column(Integer, nullable=False)
+    # When the last article in this session was first seen: a backtest may only use
+    # this row from that moment on.
+    latest_first_seen_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, nullable=False)
+    computed_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, nullable=False)
+
+
+TEXT_STATUSES = ("pending", "ok", "paywalled", "failed", "skipped")
+
 PRICES: Table = Price.__table__  # type: ignore[assignment]
 INDICATORS: Table = Indicator.__table__  # type: ignore[assignment]
 CORPORATE_ACTIONS: Table = CorporateActionRow.__table__  # type: ignore[assignment]
 ACTION_COLUMNS = list(CORPORATE_ACTIONS.columns.keys())
+ARTICLES: Table = Article.__table__  # type: ignore[assignment]
+MENTIONS: Table = ArticleMention.__table__  # type: ignore[assignment]
+SENTIMENT: Table = ArticleSentiment.__table__  # type: ignore[assignment]
+NEWS_DAILY: Table = NewsDaily.__table__  # type: ignore[assignment]
 KEY_COLUMNS = ("symbol", "date")
 
 
@@ -157,10 +255,32 @@ def get_engine() -> Engine:
 
 
 def init_db(engine: Engine | None = None) -> None:
-    """Create all tables if they don't exist. Safe to call repeatedly."""
+    """Create missing tables and columns. Safe to call repeatedly."""
     engine = engine or get_engine()
     Base.metadata.create_all(engine)
+    _add_missing_columns(engine)
     logger.info("Database initialised at %s", engine.url.render_as_string(hide_password=True))
+
+
+def _add_missing_columns(engine: Engine) -> None:
+    """Add model columns (and their indexes) that an older database is missing.
+
+    create_all() only creates whole tables; this covers purely additive schema changes.
+    Anything more (renames, type changes) needs a real migration tool such as Alembic.
+    """
+    inspector = inspect(engine)
+    with engine.begin() as conn:
+        for table in Base.metadata.sorted_tables:
+            existing = {c["name"] for c in inspector.get_columns(table.name)}
+            for column in table.columns:
+                if column.name in existing:
+                    continue
+                ddl = CreateColumn(column).compile(dialect=engine.dialect)
+                conn.exec_driver_sql(f"ALTER TABLE {table.name} ADD COLUMN {ddl}")
+                logger.info("Added column %s.%s", table.name, column.name)
+                for index in table.indexes:
+                    if column in index.columns.values():
+                        conn.execute(CreateIndex(index, if_not_exists=True))
 
 
 def upsert_prices(df: pd.DataFrame, engine: Engine | None = None) -> int:
@@ -256,6 +376,345 @@ def read_corporate_actions(symbol: str | None = None, engine: Engine | None = No
     df = pd.DataFrame(rows, columns=ACTION_COLUMNS)
     df["ex_date"] = pd.to_datetime(df["ex_date"])
     return df
+
+
+def insert_new_articles(articles: list[dict[str, Any]], engine: Engine | None = None) -> int:
+    """Insert articles whose id isn't stored yet; existing rows are left untouched.
+
+    Keeping the first stored row preserves first_seen_at, fetched_via and any extracted
+    text. Duplicate ids within `articles` keep the first occurrence. Returns rows inserted.
+    """
+    by_id: dict[str, dict[str, Any]] = {}
+    for article in articles:
+        by_id.setdefault(article["id"], article)
+    unique = list(by_id.values())
+    if not unique:
+        return 0
+    engine = engine or get_engine()
+    inserted = 0
+    with engine.begin() as conn:
+        for chunk in _chunks(unique, UPSERT_CHUNK_SIZE):
+            ids = [a["id"] for a in chunk]
+            existing = set(
+                conn.execute(select(ARTICLES.c.id).where(ARTICLES.c.id.in_(ids))).scalars()
+            )
+            new = [{"text_status": "pending", **a} for a in chunk if a["id"] not in existing]
+            if new:
+                conn.execute(ARTICLES.insert(), new)
+                inserted += len(new)
+    return inserted
+
+
+def pending_text_articles(
+    max_attempts: int, limit: int | None = None, engine: Engine | None = None
+) -> list[dict[str, Any]]:
+    """Articles still awaiting text extraction with attempts left, oldest first."""
+    stmt = (
+        select(ARTICLES.c.id, ARTICLES.c.url, ARTICLES.c.source, ARTICLES.c.text_attempts)
+        .where(ARTICLES.c.text_status == "pending", ARTICLES.c.text_attempts < max_attempts)
+        .order_by(ARTICLES.c.first_seen_at, ARTICLES.c.id)
+        .limit(limit)
+    )
+    with (engine or get_engine()).connect() as conn:
+        return [dict(r) for r in conn.execute(stmt).mappings()]
+
+
+def update_article_text(
+    article_id: str,
+    status: str,
+    attempts: int,
+    text: str | None = None,
+    error: str | None = None,
+    engine: Engine | None = None,
+) -> None:
+    """Record the outcome of a text-extraction attempt for one article."""
+    if status not in TEXT_STATUSES:
+        raise ValueError(f"invalid text_status {status!r}; expected one of {TEXT_STATUSES}")
+    stmt = (
+        update(ARTICLES)
+        .where(ARTICLES.c.id == article_id)
+        .values(
+            text_status=status, text_attempts=attempts, text=text, text_error=error, linked_at=None
+        )
+    )
+    with (engine or get_engine()).begin() as conn:
+        conn.execute(stmt)
+
+
+def read_extracted_texts(engine: Engine | None = None) -> list[dict[str, Any]]:
+    """id, url, text and text_attempts of every article with text_status = 'ok'."""
+    stmt = select(ARTICLES.c.id, ARTICLES.c.url, ARTICLES.c.text, ARTICLES.c.text_attempts).where(
+        ARTICLES.c.text_status == "ok"
+    )
+    with (engine or get_engine()).connect() as conn:
+        return [dict(r) for r in conn.execute(stmt).mappings()]
+
+
+def set_article_texts(texts: dict[str, str], engine: Engine | None = None) -> None:
+    """Overwrite articles.text for each article id -> text pair."""
+    if not texts:
+        return
+    rows = [{"aid": aid, "txt": text} for aid, text in texts.items()]
+    stmt = (
+        update(ARTICLES)
+        .where(ARTICLES.c.id == bindparam("aid"))
+        .values(text=bindparam("txt"), linked_at=None)
+    )
+    with (engine or get_engine()).begin() as conn:
+        for chunk in _chunks(rows, UPSERT_CHUNK_SIZE):
+            conn.execute(stmt, chunk)
+
+
+def read_articles_for_grouping(
+    since: dt.datetime | None = None, engine: Engine | None = None
+) -> pd.DataFrame:
+    """id, title, source, published_at, first_seen_at, story_id; optionally only recent ones.
+
+    `since` filters on COALESCE(published_at, first_seen_at).
+    """
+    event_time = func.coalesce(ARTICLES.c.published_at, ARTICLES.c.first_seen_at)
+    columns = ["id", "title", "source", "published_at", "first_seen_at", "story_id"]
+    stmt = select(*(ARTICLES.c[c] for c in columns))
+    if since is not None:
+        stmt = stmt.where(event_time >= since)
+    with (engine or get_engine()).connect() as conn:
+        rows = conn.execute(stmt).mappings().all()
+    return pd.DataFrame(rows, columns=columns)
+
+
+def earliest_ungrouped_time(engine: Engine | None = None) -> dt.datetime | None:
+    """COALESCE(published_at, first_seen_at) of the oldest article without a story_id."""
+    stmt = select(func.min(func.coalesce(ARTICLES.c.published_at, ARTICLES.c.first_seen_at))).where(
+        ARTICLES.c.story_id.is_(None)
+    )
+    with (engine or get_engine()).connect() as conn:
+        value = conn.execute(stmt).scalar_one()
+    if value is None:
+        return None
+    value = pd.Timestamp(value).to_pydatetime()  # func.min loses the UTC type on SQLite
+    return value if value.tzinfo else value.replace(tzinfo=dt.UTC)
+
+
+def set_story_ids(story_ids: dict[str, str], engine: Engine | None = None) -> None:
+    """Set articles.story_id for each article id -> story id pair."""
+    if not story_ids:
+        return
+    with (engine or get_engine()).begin() as conn:
+        for chunk in _chunks(
+            [{"aid": a, "sid": s} for a, s in story_ids.items()], UPSERT_CHUNK_SIZE
+        ):
+            conn.execute(
+                update(ARTICLES)
+                .where(ARTICLES.c.id == bindparam("aid"))
+                .values(story_id=bindparam("sid")),
+                chunk,
+            )
+
+
+def articles_to_link(full: bool = False, engine: Engine | None = None) -> pd.DataFrame:
+    """Articles needing entity linking (never linked, or text changed since); all if full."""
+    columns = ["id", "title", "summary", "text", "published_at", "first_seen_at"]
+    stmt = select(*(ARTICLES.c[c] for c in columns))
+    if not full:
+        stmt = stmt.where(ARTICLES.c.linked_at.is_(None))
+    with (engine or get_engine()).connect() as conn:
+        return pd.DataFrame(conn.execute(stmt).mappings().all(), columns=columns)
+
+
+def replace_mentions(
+    article_ids: list[str], mentions: list[dict[str, Any]], engine: Engine | None = None
+) -> None:
+    """Replace all mentions (and drop sentiment) for `article_ids`; mark them linked."""
+    now = dt.datetime.now(dt.UTC)
+    with (engine or get_engine()).begin() as conn:
+        for chunk in _chunks([{"aid": a} for a in article_ids], UPSERT_CHUNK_SIZE):
+            ids = [c["aid"] for c in chunk]
+            conn.execute(delete(MENTIONS).where(MENTIONS.c.article_id.in_(ids)))
+            # Sentiment is scored per mention, so it's stale once mentions are rebuilt.
+            conn.execute(delete(SENTIMENT).where(SENTIMENT.c.article_id.in_(ids)))
+            conn.execute(update(ARTICLES).where(ARTICLES.c.id.in_(ids)).values(linked_at=now))
+        for chunk in _chunks(mentions, UPSERT_CHUNK_SIZE):
+            conn.execute(MENTIONS.insert(), chunk)
+
+
+def read_mentions(engine: Engine | None = None) -> pd.DataFrame:
+    """All mentions joined with the article's title, source and story_id."""
+    stmt = select(
+        MENTIONS,
+        ARTICLES.c.title,
+        ARTICLES.c.source,
+        ARTICLES.c.story_id,
+        ARTICLES.c.published_at,
+    ).join(ARTICLES, ARTICLES.c.id == MENTIONS.c.article_id)
+    with (engine or get_engine()).connect() as conn:
+        return pd.DataFrame(conn.execute(stmt).mappings().all())
+
+
+def mentions_to_score(
+    model_name: str, min_confidence: float, engine: Engine | None = None
+) -> pd.DataFrame:
+    """Linked mentions (confidence >= min_confidence) not yet scored by `model_name`."""
+    already_scored = select(SENTIMENT.c.article_id).where(
+        SENTIMENT.c.model_name == model_name,
+        SENTIMENT.c.article_id == MENTIONS.c.article_id,
+        SENTIMENT.c.symbol == MENTIONS.c.symbol,
+    )
+    stmt = (
+        select(
+            MENTIONS.c.article_id,
+            MENTIONS.c.symbol,
+            ARTICLES.c.title,
+            ARTICLES.c.summary,
+            ARTICLES.c.text,
+            ARTICLES.c.published_at,
+            ARTICLES.c.first_seen_at,
+        )
+        .join(ARTICLES, ARTICLES.c.id == MENTIONS.c.article_id)
+        .where(MENTIONS.c.confidence >= min_confidence)
+        .where(~exists(already_scored))
+        .order_by(MENTIONS.c.article_id, MENTIONS.c.symbol)
+    )
+    with (engine or get_engine()).connect() as conn:
+        df = pd.DataFrame(conn.execute(stmt).mappings().all())
+    columns = ["article_id", "symbol", "title", "summary", "text", "published_at", "first_seen_at"]
+    return df.reindex(columns=columns)
+
+
+def insert_sentiment(rows: list[dict[str, Any]], engine: Engine | None = None) -> None:
+    """Insert article_sentiment rows."""
+    if not rows:
+        return
+    with (engine or get_engine()).begin() as conn:
+        for chunk in _chunks(rows, UPSERT_CHUNK_SIZE):
+            conn.execute(SENTIMENT.insert(), chunk)
+
+
+def read_scored_mentions(model_name: str, engine: Engine | None = None) -> pd.DataFrame:
+    """Scored mentions for aggregation: sentiment + mention confidence + article fields."""
+    stmt = (
+        select(
+            SENTIMENT.c.article_id,
+            SENTIMENT.c.symbol,
+            SENTIMENT.c.label,
+            SENTIMENT.c.score,
+            MENTIONS.c.confidence,
+            ARTICLES.c.title,
+            ARTICLES.c.source,
+            ARTICLES.c.story_id,
+            ARTICLES.c.published_at,
+            ARTICLES.c.first_seen_at,
+        )
+        .join(
+            MENTIONS,
+            (MENTIONS.c.article_id == SENTIMENT.c.article_id)
+            & (MENTIONS.c.symbol == SENTIMENT.c.symbol),
+        )
+        .join(ARTICLES, ARTICLES.c.id == SENTIMENT.c.article_id)
+        .where(SENTIMENT.c.model_name == model_name)
+    )
+    with (engine or get_engine()).connect() as conn:
+        return pd.DataFrame(conn.execute(stmt).mappings().all())
+
+
+def trading_dates(engine: Engine | None = None) -> list[dt.date]:
+    """Every date with at least one stored price bar, i.e. known NSE trading sessions."""
+    stmt = select(PRICES.c.date).distinct().order_by(PRICES.c.date)
+    with (engine or get_engine()).connect() as conn:
+        return list(conn.execute(stmt).scalars())
+
+
+def replace_news_daily(
+    model_name: str, rows: list[dict[str, Any]], engine: Engine | None = None
+) -> None:
+    """Replace all news_daily rows for `model_name` with `rows`."""
+    with (engine or get_engine()).begin() as conn:
+        conn.execute(delete(NEWS_DAILY).where(NEWS_DAILY.c.model_name == model_name))
+        for chunk in _chunks(rows, UPSERT_CHUNK_SIZE):
+            conn.execute(NEWS_DAILY.insert(), chunk)
+
+
+def read_news_daily(model_name: str, engine: Engine | None = None) -> pd.DataFrame:
+    """news_daily rows for `model_name`, sorted by symbol and session."""
+    stmt = (
+        select(NEWS_DAILY)
+        .where(NEWS_DAILY.c.model_name == model_name)
+        .order_by(NEWS_DAILY.c.symbol, NEWS_DAILY.c.session_date)
+    )
+    with (engine or get_engine()).connect() as conn:
+        return pd.DataFrame(conn.execute(stmt).mappings().all())
+
+
+def read_stock_news(
+    symbol: str, model_name: str, min_confidence: float, engine: Engine | None = None
+) -> pd.DataFrame:
+    """Articles linked to `symbol` (confidence >= min_confidence) with their sentiment.
+
+    Sentiment columns are NaN for articles not yet scored by `model_name`.
+    """
+    sentiment = (
+        select(SENTIMENT)
+        .where(SENTIMENT.c.model_name == model_name, SENTIMENT.c.symbol == symbol)
+        .subquery()
+    )
+    stmt = (
+        select(
+            ARTICLES.c.id.label("article_id"),
+            ARTICLES.c.title,
+            ARTICLES.c.url,
+            ARTICLES.c.source,
+            ARTICLES.c.story_id,
+            ARTICLES.c.published_at,
+            ARTICLES.c.first_seen_at,
+            MENTIONS.c.confidence,
+            sentiment.c.label,
+            sentiment.c.score,
+        )
+        .join(MENTIONS, MENTIONS.c.article_id == ARTICLES.c.id)
+        .outerjoin(sentiment, sentiment.c.article_id == ARTICLES.c.id)
+        .where(MENTIONS.c.symbol == symbol, MENTIONS.c.confidence >= min_confidence)
+    )
+    columns = [
+        "article_id", "title", "url", "source", "story_id", "published_at",
+        "first_seen_at", "confidence", "label", "score",
+    ]  # fmt: skip
+    with (engine or get_engine()).connect() as conn:
+        return pd.DataFrame(conn.execute(stmt).mappings().all(), columns=columns)
+
+
+def read_story_sources(story_ids: list[str], engine: Engine | None = None) -> pd.DataFrame:
+    """(story_id, source) for every article in the given stories, linked or not."""
+    frames = []
+    with (engine or get_engine()).connect() as conn:
+        for chunk in _chunks([{"sid": s} for s in story_ids], UPSERT_CHUNK_SIZE):
+            stmt = select(ARTICLES.c.story_id, ARTICLES.c.source).where(
+                ARTICLES.c.story_id.in_([c["sid"] for c in chunk])
+            )
+            frames.append(pd.DataFrame(conn.execute(stmt).mappings().all()))
+    if not frames:
+        return pd.DataFrame(columns=["story_id", "source"])
+    return pd.concat(frames, ignore_index=True).reindex(columns=["story_id", "source"])
+
+
+def count_articles(group_by: str = "fetched_via", engine: Engine | None = None) -> dict[str, int]:
+    """Return stored article counts grouped by `fetched_via` or `source`."""
+    column = ARTICLES.c[group_by]
+    stmt = select(column, func.count()).group_by(column)
+    with (engine or get_engine()).connect() as conn:
+        return {key or "(unknown)": n for key, n in conn.execute(stmt)}
+
+
+def text_status_counts(engine: Engine | None = None) -> pd.DataFrame:
+    """Article counts by source and text_status (rows: source, columns: status)."""
+    stmt = select(ARTICLES.c.source, ARTICLES.c.text_status, func.count().label("n")).group_by(
+        ARTICLES.c.source, ARTICLES.c.text_status
+    )
+    with (engine or get_engine()).connect() as conn:
+        df = pd.DataFrame(
+            conn.execute(stmt).mappings().all(), columns=["source", "text_status", "n"]
+        )
+    return df.pivot_table(
+        index="source", columns="text_status", values="n", fill_value=0, aggfunc="sum"
+    )
 
 
 def count_prices(engine: Engine | None = None) -> dict[str, int]:

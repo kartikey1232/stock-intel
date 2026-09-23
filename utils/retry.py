@@ -18,12 +18,13 @@ def retry(
     base_delay: float = 2.0,
     max_delay: float = 30.0,
     exceptions: tuple[type[BaseException], ...] = (Exception,),
-    sleep: Callable[[float], None] = time.sleep,
+    sleep: Callable[[float], None] | None = None,
 ) -> Callable[[Callable[P, R]], Callable[P, R]]:
     """Retry the decorated function on `exceptions` with exponential backoff and jitter.
 
     Delay before retry n (1-based) is min(max_delay, base_delay * 2**(n-1)) plus up to
     25% random jitter. The last exception is re-raised once all attempts are used.
+    `sleep` defaults to time.sleep, looked up at call time so tests can patch it.
     """
 
     def decorator(func: Callable[P, R]) -> Callable[P, R]:
@@ -45,7 +46,7 @@ def retry(
                         exc,
                         delay,
                     )
-                    sleep(delay)
+                    (sleep or time.sleep)(delay)
             raise AssertionError("unreachable")
 
         return wrapper

@@ -1,4 +1,4 @@
-"""Streamlit dashboard: price chart, indicators and key metrics per watchlist stock.
+"""Streamlit dashboard: price chart, indicators, news sentiment and metrics per stock.
 
 Run with:  uv run streamlit run dashboard.py
 """
@@ -13,8 +13,19 @@ import streamlit as st
 from plotly.subplots import make_subplots
 
 from config.loader import Stock, load_watchlist
+from config.news_sources import load_news_sources
 from processing.adjustments import adjust_prices
-from storage.db import read_corporate_actions, read_indicators, read_prices
+from processing.entities import LINK_THRESHOLD
+from processing.sentiment import TradingCalendar, news_time, session_for
+from storage.db import (
+    read_corporate_actions,
+    read_indicators,
+    read_news_daily,
+    read_prices,
+    read_stock_news,
+    read_story_sources,
+    trading_dates,
+)
 
 IST = ZoneInfo("Asia/Kolkata")
 CACHE_TTL_S = 300
@@ -25,6 +36,9 @@ ADJUSTED, RAW = "Adjusted", "Raw"
 UP_COLOR, DOWN_COLOR = "#26a69a", "#ef5350"
 SMA50_COLOR, SMA200_COLOR, BB_COLOR = "#f5a623", "#7b61ff", "rgba(120,144,156,0.8)"
 ACTION_COLOR = "#9e9e9e"
+SENTIMENT_COLOR, STORIES_COLOR = "#ab47bc", "rgba(171,71,188,0.25)"
+BADGE_THRESHOLD = 0.25  # story score at or beyond +/- this gets a positive/negative badge
+MAX_NEWS_ITEMS = 40
 
 
 @dataclass(frozen=True)
@@ -73,6 +87,88 @@ def cached_actions(symbol: str) -> pd.DataFrame:
     return read_corporate_actions(symbol)
 
 
+@st.cache_data(ttl=CACHE_TTL_S, show_spinner=False)
+def cached_news_daily(symbol: str, model_name: str) -> pd.DataFrame:
+    """news_daily rows for `symbol`, cached."""
+    daily = read_news_daily(model_name)
+    return daily[daily["symbol"] == symbol] if not daily.empty else daily
+
+
+@st.cache_data(ttl=CACHE_TTL_S, show_spinner="Loading news…")
+def cached_news(symbol: str, model_name: str) -> pd.DataFrame:
+    """One row per story linked to `symbol` (see news_items), cached."""
+    articles = read_stock_news(symbol, model_name, LINK_THRESHOLD)
+    story_ids = articles["story_id"].dropna().unique().tolist()
+    return news_items(articles, read_story_sources(story_ids), TradingCalendar(trading_dates()))
+
+
+def news_items(
+    articles: pd.DataFrame, story_sources: pd.DataFrame, calendar: TradingCalendar
+) -> pd.DataFrame:
+    """Collapse linked articles into one row per story, newest first.
+
+    The earliest copy represents the story. `score` is the mean over scored copies,
+    `more_sources` the number of other outlets that carried it, and `session_date` the
+    IST trading session it belongs to.
+    """
+    if articles.empty:
+        return articles.assign(news_time=[], session_date=[], more_sources=[])
+    df = articles.copy()
+    df["story"] = df["story_id"].fillna(df["article_id"])
+    df["news_time"] = [
+        news_time(p, f) for p, f in zip(df["published_at"], df["first_seen_at"], strict=True)
+    ]
+    df = df.sort_values("news_time")
+    reps = df.groupby("story", sort=False).first()
+    reps["score"] = df.groupby("story")["score"].mean()
+    reps["session_date"] = [session_for(t, calendar) for t in reps["news_time"]]
+
+    sources = pd.concat(
+        [story_sources.rename(columns={"story_id": "story"}), df[["story", "source"]]]
+    ).dropna()
+    outlets = sources.groupby("story")["source"].agg(lambda s: set(s))
+    reps["more_sources"] = [
+        len(outlets.get(story, set()) - {src})
+        for story, src in zip(reps.index, reps["source"], strict=True)
+    ]
+    return reps.reset_index().sort_values("news_time", ascending=False).reset_index(drop=True)
+
+
+def sentiment_badge(score: float | None) -> str:
+    """Streamlit markdown badge for a story score."""
+    if score is None or pd.isna(score):
+        return ":gray-badge[unscored]"
+    if score >= BADGE_THRESHOLD:
+        return f":green-badge[positive {score:+.2f}]"
+    if score <= -BADGE_THRESHOLD:
+        return f":red-badge[negative {score:+.2f}]"
+    return f":gray-badge[neutral {score:+.2f}]"
+
+
+def escape_markdown(text: str) -> str:
+    """Escape characters Streamlit markdown would interpret ($ is LaTeX, [] are links)."""
+    for char in "\\$[]*_`~":
+        text = text.replace(char, "\\" + char)
+    return text
+
+
+def sentiment_averages(daily: pd.DataFrame, end: dt.date) -> tuple[float | None, float | None]:
+    """Story-weighted mean of daily weighted scores over the 7 and 30 days up to `end`."""
+
+    def window(days: int) -> float | None:
+        dates = pd.to_datetime(daily["session_date"]).dt.date
+        rows = daily[(dates > end - dt.timedelta(days=days)) & (dates <= end)]
+        if rows.empty or rows["story_count"].sum() == 0:
+            return None
+        return float(
+            (rows["weighted_score"] * rows["story_count"]).sum() / rows["story_count"].sum()
+        )
+
+    if daily.empty:
+        return None, None
+    return window(7), window(30)
+
+
 def actions_in_range(actions: pd.DataFrame, start: dt.date, end: dt.date) -> pd.DataFrame:
     """Corporate actions whose ex_date falls within [start, end]."""
     dates = actions["ex_date"].dt.date
@@ -116,6 +212,11 @@ def compute_metrics(df: pd.DataFrame) -> Metrics:
     )
 
 
+def today_ist() -> dt.date:
+    """Today's date in IST."""
+    return dt.datetime.now(IST).date()
+
+
 def filter_range(df: pd.DataFrame, start: dt.date, end: dt.date) -> pd.DataFrame:
     """Rows with start <= date <= end."""
     dates = df["date"].dt.date
@@ -133,19 +234,33 @@ def missing_trading_days(dates: pd.Series) -> list[str]:
 # --- chart ------------------------------------------------------------------------
 
 
-def build_figure(df: pd.DataFrame, symbol: str, actions: pd.DataFrame | None = None) -> go.Figure:
-    """Candlestick + SMA/Bollinger overlays, volume, RSI and MACD in one shared-x figure.
+def build_figure(
+    df: pd.DataFrame,
+    symbol: str,
+    actions: pd.DataFrame | None = None,
+    news: pd.DataFrame | None = None,
+) -> go.Figure:
+    """Candlestick + SMA/Bollinger overlays, volume, RSI, MACD and (optionally) a news
+    sentiment panel, all on one shared date axis.
 
-    Each row of `actions` is drawn as a dashed vertical line labelled at the top.
+    Each row of `actions` is drawn as a dashed vertical line labelled at the top. `news`
+    is news_daily rows (session_date, weighted_score, story_count).
     """
     has = {c: c in df.columns and df[c].notna().any() for c in df.columns}
+    with_news = news is not None
+    titles = [f"{symbol} price", "Volume", "RSI (14)", "MACD (12, 26, 9)"]
+    heights = [0.5, 0.12, 0.19, 0.19]
+    if with_news:
+        titles.append("News sentiment (line) and stories (bars)")
+        heights = [0.42, 0.1, 0.15, 0.15, 0.18]
     fig = make_subplots(
-        rows=4,
+        rows=len(titles),
         cols=1,
         shared_xaxes=True,
         vertical_spacing=0.03,
-        row_heights=[0.5, 0.12, 0.19, 0.19],
-        subplot_titles=(f"{symbol} price", "Volume", "RSI (14)", "MACD (12, 26, 9)"),
+        row_heights=heights,
+        subplot_titles=titles,
+        specs=[[{"secondary_y": i == 4}] for i in range(len(titles))],
     )
     x = df["date"]
 
@@ -231,8 +346,38 @@ def build_figure(df: pd.DataFrame, symbol: str, actions: pd.DataFrame | None = N
             go.Scatter(x=x, y=df["macd_signal"], name="Signal", line={"color": SMA50_COLOR}), 4, 1
         )
 
+    if with_news:
+        news_x = pd.to_datetime(news["session_date"])
+        fig.add_trace(
+            go.Bar(
+                x=news_x,
+                y=news["story_count"],
+                name="Stories",
+                marker_color=STORIES_COLOR,
+                showlegend=False,
+            ),
+            5,
+            1,
+            secondary_y=True,
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=news_x,
+                y=news["weighted_score"],
+                name="Sentiment",
+                mode="lines+markers",
+                line={"color": SENTIMENT_COLOR},
+                showlegend=False,
+            ),
+            5,
+            1,
+        )
+        fig.add_hline(y=0, line={"color": "grey", "dash": "dot", "width": 1}, row=5, col=1)
+        fig.update_yaxes(range=[-1, 1], title_text="score", row=5, col=1)
+        fig.update_yaxes(title_text="stories", showgrid=False, row=5, col=1, secondary_y=True)
+
     for _, action in (actions if actions is not None else pd.DataFrame()).iterrows():
-        # A paper-referenced shape draws one continuous line through all four panels.
+        # A paper-referenced shape draws one continuous line through all panels.
         fig.add_shape(
             type="line",
             x0=action["ex_date"],
@@ -258,7 +403,7 @@ def build_figure(df: pd.DataFrame, symbol: str, actions: pd.DataFrame | None = N
 
     fig.update_xaxes(rangebreaks=[{"bounds": ["sat", "mon"]}, {"values": missing_trading_days(x)}])
     fig.update_layout(
-        height=950,
+        height=1150 if with_news else 950,
         margin={"l": 10, "r": 10, "t": 40, "b": 10},
         xaxis_rangeslider_visible=False,
         hovermode="x unified",
@@ -270,9 +415,9 @@ def build_figure(df: pd.DataFrame, symbol: str, actions: pd.DataFrame | None = N
 # --- UI ---------------------------------------------------------------------------
 
 
-def render_metrics(m: Metrics) -> None:
-    """Render the top row of metric cards."""
-    cols = st.columns(6)
+def render_metrics(m: Metrics, sentiment: tuple[float | None, float | None]) -> None:
+    """Render the top row of metric cards; `sentiment` is (7-day, 30-day) averages."""
+    cols = st.columns(7)
     cols[0].metric("Last close", f"₹{m.last_close:,.2f}", border=True)
     cols[1].metric(
         "Day change",
@@ -309,6 +454,45 @@ def render_metrics(m: Metrics) -> None:
             delta=f"{gap:+.1f}%",
             border=True,
         )
+
+    avg7, avg30 = sentiment
+    cols[6].metric(
+        "News sentiment 7d",
+        "—" if avg7 is None else f"{avg7:+.2f}",
+        delta=None if avg7 is None or avg30 is None else f"{avg7 - avg30:+.2f} vs 30d",
+        help="Story-weighted FinBERT score (-1 to +1) over the last 7 days, compared "
+        f"with the 30-day average ({'—' if avg30 is None else f'{avg30:+.2f}'}).",
+        border=True,
+    )
+
+
+def render_news_list(items: pd.DataFrame, start: dt.date, end: dt.date) -> None:
+    """News stories for the selected range: linked headline, source, IST time, badge."""
+    st.subheader("News")
+    in_range = (
+        items[(items["session_date"] >= start) & (items["session_date"] <= end)]
+        if not items.empty
+        else items
+    )
+    if in_range.empty:
+        st.caption(
+            "No linked news in this date range. Collect it with `uv run python run_update.py`."
+        )
+        return
+    for item in in_range.head(MAX_NEWS_ITEMS).itertuples():
+        when = pd.Timestamp(item.news_time).tz_convert(IST)
+        more = (
+            f" · +{item.more_sources} more source{'s' if item.more_sources > 1 else ''}"
+            if item.more_sources
+            else ""
+        )
+        st.markdown(
+            f"[{escape_markdown(item.title)}]({item.url})  \n"
+            f"{escape_markdown(item.source or 'unknown')} · {when:%d %b, %H:%M} IST{more} "
+            f"· {sentiment_badge(item.score)}"
+        )
+    if len(in_range) > MAX_NEWS_ITEMS:
+        st.caption(f"Showing the latest {MAX_NEWS_ITEMS} of {len(in_range)} stories.")
 
 
 def sidebar(stocks: list[Stock]) -> tuple[Stock, str]:
@@ -375,8 +559,14 @@ def main() -> None:
     actions = cached_actions(stock.symbol)
     adjusted = merge_prices_indicators(adjust_prices(prices, actions), indicators)
 
+    model_name = load_news_sources().sentiment_model
+    news_daily = cached_news_daily(stock.symbol, model_name)
+    last_price_date = adjusted["date"].max().date()
+
     # Metrics always use adjusted prices so 52-week ranges and SMA gaps are comparable.
-    render_metrics(compute_metrics(adjusted))
+    render_metrics(
+        compute_metrics(adjusted), sentiment_averages(news_daily, max(last_price_date, today_ist()))
+    )
 
     df = adjusted if mode == ADJUSTED else merge_prices_indicators(prices, indicators)
     first, last = df["date"].min().date(), df["date"].max().date()
@@ -386,7 +576,11 @@ def main() -> None:
         st.info("No trading days in the selected range. Try widening it.")
         return
     visible_actions = actions_in_range(actions, start, end)
-    st.plotly_chart(build_figure(view, stock.symbol, visible_actions), width="stretch")
+    news_view = news_daily
+    if not news_daily.empty:
+        sessions = pd.to_datetime(news_daily["session_date"]).dt.date
+        news_view = news_daily[(sessions >= start) & (sessions <= end)]
+    st.plotly_chart(build_figure(view, stock.symbol, visible_actions, news_view), width="stretch")
 
     for _, action in visible_actions.iterrows():
         effect = (
@@ -399,6 +593,8 @@ def main() -> None:
             f"**{describe_action(action)}** — {effect}. Source: {action['source']}.",
             icon="ℹ️",
         )
+
+    render_news_list(cached_news(stock.symbol, model_name), start, end)
 
     fetched = prices["fetched_at"].max().astimezone(IST)
     st.caption(

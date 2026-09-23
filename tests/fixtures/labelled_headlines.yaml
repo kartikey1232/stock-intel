@@ -1,0 +1,156 @@
+# Hand-labelled headlines for evaluating processing/entities.py.
+#   title:   the headline
+#   summary: optional feed summary
+#   date:    optional article date (default 2026-09-20, i.e. after the Tata Motors demerger)
+#   about:   watchlist symbols the article is actually about ([] = none)
+#   why:     what the case tests
+#
+# Keep this honest: add headlines the linker gets wrong rather than tuning it to this file.
+
+headlines:
+  # --- HDFCBANK ---------------------------------------------------------------------
+  - title: "HDFC Bank Q2 results: net profit rises 11% to ₹18,700 crore"
+    about: [HDFCBANK]
+  - title: "RBI approves Anup Bagchi as HDFC Bank's next CEO"
+    about: [HDFCBANK]
+  - title: "HDFC shares gain 2% after lender reports strong loan growth"
+    about: [HDFCBANK]
+    why: ambiguous alias with finance context
+  - title: "HDFC Life shares slump 6% after weak VNB margin in Q2"
+    about: []
+    why: trap, HDFC Life
+  - title: "HDFC AMC declares interim dividend of ₹20 per share"
+    about: []
+    why: trap, HDFC AMC
+  - title: "HDFC Securities picks three stocks to buy this week"
+    about: []
+    why: trap, HDFC Securities
+  - title: "HDFC Mutual Fund raises stake in Eternal to 5%"
+    about: []
+    why: trap, HDFC Mutual Fund
+  - title: "HDFC Ergo launches new health cover for senior citizens"
+    about: []
+    why: trap, ambiguous alias without finance context
+
+  # --- RELIANCE -----------------------------------------------------------------------
+  - title: "Reliance Industries Q2 profit beats estimates on strong Jio, retail growth"
+    about: [RELIANCE]
+  - title: "RIL shares hit record high as Jio IPO buzz builds"
+    about: [RELIANCE]
+  - title: "Jio adds 3.5 million subscribers in August; Airtel gains 2 million"
+    about: [RELIANCE]
+    why: Jio is an RIL subsidiary
+  - title: "Reliance Retail acquires majority stake in Kelvinator brand"
+    about: [RELIANCE]
+  - title: "Reliance shares rise 2% after Jefferies raises target price"
+    about: [RELIANCE]
+    why: ambiguous alias with finance context
+  - title: "Mukesh Ambani says Reliance will invest ₹75,000 crore in Andhra Pradesh"
+    about: [RELIANCE]
+    why: hard case, bare "Reliance" without a finance keyword
+  - title: "Reliance Power shares hit upper circuit after debt settlement"
+    about: []
+    why: trap, Reliance Power
+  - title: "Reliance Infra wins ₹780 crore arbitration award against DMRC"
+    about: []
+    why: trap, Reliance Infrastructure
+  - title: "Jio Financial Services Q2 net profit rises 3% to ₹695 crore"
+    about: []
+    why: trap, separately listed JIOFIN
+
+  # --- TCS ----------------------------------------------------------------------------
+  - title: "TCS Q2 results: revenue up 4%, company announces ₹11 dividend"
+    about: [TCS]
+  - title: "Tata Consultancy Services wins $1 billion deal from UK insurer Aviva"
+    about: [TCS]
+  - title: "TCS shares fall 3% as US visa fee hike weighs on IT stocks"
+    about: [TCS]
+  - title: "TCS on foreign remittances: new 20% rate kicks in from October"
+    about: []
+    why: trap, tax collected at source
+  - title: "Government cuts tax collected at source (TCS) on overseas tour packages"
+    about: []
+    why: trap, hard case with the acronym in brackets
+
+  # --- INFY ---------------------------------------------------------------------------
+  - title: "Infosys raises FY27 revenue guidance to 3-5% after strong Q2"
+    about: [INFY]
+  - title: "Infy ADR jumps 5% in US trade after guidance upgrade"
+    about: [INFY]
+  - title: "Nandan Nilekani: Infosys will not chase large acquisitions"
+    about: [INFY]
+  - title: "Infosys co-founder Narayana Murthy calls for 70-hour work week again"
+    about: []
+    why: trap, co-founder personal news
+  - title: "Former Infosys CEO Vishal Sikka's AI startup raises $53 million"
+    about: []
+    why: trap, ex-employee's startup
+  - title: "Sudha Murty, Infosys Foundation chairperson, nominated to Rajya Sabha"
+    about: []
+    why: trap, philanthropy
+  - title: "IT major wins $500 million deal from US bank"
+    summary: "Infosys said on Monday it had signed a five-year contract with a large US lender."
+    about: [INFY]
+    why: company only named in the summary
+
+  # --- TMPV ---------------------------------------------------------------------------
+  - title: "Tata Motors Passenger Vehicles Q2: EBITDA margin improves to 8%"
+    about: [TMPV]
+  - title: "JLR sales in China fall 15% in September quarter"
+    about: [TMPV]
+  - title: "Jaguar Land Rover resumes production after cyber attack"
+    date: 2026-09-10
+    about: [TMPV]
+    why: post-demerger JLR headline must link
+  - title: "Tata Motors truck sales rise 12% in September"
+    date: 2026-10-01
+    about: []
+    why: post-demerger, bare Tata Motors with CV context is the CV company
+  - title: "Tata Motors results: Q1 net profit rises 62% to ₹5,566 crore"
+    date: 2025-07-25
+    about: [TMPV]
+    why: pre-demerger, Tata Motors was the combined company (listing continues as TMPV)
+  - title: "Tata Motors shares fall 3% ahead of demerger record date"
+    date: 2025-10-10
+    about: [TMPV]
+    why: pre-demerger ordinary alias
+  - title: "Tata Motors Nexon EV crosses 1 lakh sales milestone"
+    about: [TMPV]
+    why: post-demerger with passenger-vehicle context
+  - title: "Tata Motors CV unit launches new Ace Pro mini truck"
+    about: []
+    why: trap, excluded CV name
+  - title: "TMCV shares list at ₹335 on NSE after demerger"
+    about: []
+    why: trap, the CV listing
+  - title: "Tata Motors bags order for 1,000 buses from Karnataka transport corporation"
+    about: []
+    why: post-demerger CV business, no passenger-vehicle context
+
+  # --- Tata group, not TMPV or TCS -------------------------------------------------------
+  - title: "Tata Steel Q2 profit triples on lower coking coal costs"
+    about: []
+  - title: "Tata Sons board meets to discuss Tata Trusts rift"
+    about: []
+  - title: "Tata Power signs PPA for 1 GW renewable project in Rajasthan"
+    about: []
+
+  # --- Market wraps -------------------------------------------------------------------
+  - title: "Sensex, Nifty end higher; HDFC Bank, Infosys, RIL top gainers"
+    about: []
+    why: index-level wrap listing several stocks
+  - title: "Stock market today: Nifty 50 slips below 23,400 as IT stocks drag; TCS, Infosys fall"
+    about: []
+    why: index-level wrap
+  - title: "Closing Bell: Sensex sheds 500 points as Reliance Industries, HDFC Bank weigh"
+    about: []
+    why: index-level wrap
+  - title: "HDFC Bank shares drag Nifty lower after Q2 miss"
+    about: [HDFCBANK]
+    why: the stock is the subject, the index is incidental
+
+  # --- Several stocks at once -------------------------------------------------------------
+  - title: "Infosys vs TCS: which IT stock should you buy after Q2 results?"
+    about: [INFY, TCS]
+  - title: "HDFC Bank, Reliance Industries among top FPI buys in September"
+    about: [HDFCBANK, RELIANCE]
