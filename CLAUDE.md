@@ -40,6 +40,12 @@ uv run streamlit run dashboard.py               # launch the dashboard
   what "empty" means (first run = error, incremental = no new data).
 - Yahoo inserts filler bars on NSE holidays (zero volume, flat OHLC); the price collector
   drops them.
+- Corporate actions: `prices` stays raw forever; adjustment happens in
+  `processing/adjustments.py` from `config/corporate_actions.yaml` (source of truth,
+  synced into the `corporate_actions` table). Indicators and dashboard metrics must use
+  adjusted prices. Yahoo already back-adjusts most splits/bonuses, so only record an
+  action when raw data shows an unadjusted gap (the indicators step warns on >25%
+  overnight gaps), or history gets double-adjusted.
 - pandas-ta 0.4 emits RSI from bar 2; `processing/indicators.py` masks the warm-up.
   pandas-ta is a beta release pinned in `uv.lock`, and it caps numpy at 2.2 via numba.
 - Tests must never hit the network or the real database; use a tmp SQLite engine and

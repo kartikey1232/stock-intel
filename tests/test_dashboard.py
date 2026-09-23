@@ -5,6 +5,7 @@ import pandas as pd
 import pytest
 
 import dashboard
+from processing.adjustments import adjust_prices
 from processing.indicators import compute_indicators
 
 
@@ -71,3 +72,37 @@ def test_build_figure_with_and_without_indicators() -> None:
     prices_only = df[["symbol", "date", "open", "high", "low", "close", "volume"]]
     bare = dashboard.build_figure(prices_only, "TEST")
     assert {t.name for t in bare.data} == {"Price", "Volume"}
+
+
+def actions_df(ex_date: str = "2026-09-01", factor: float = 0.6) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "symbol": ["TEST"],
+            "ex_date": [pd.Timestamp(ex_date)],
+            "action_type": ["demerger"],
+            "price_factor": [factor],
+            "source": ["test"],
+            "note": [None],
+        }
+    )
+
+
+def test_actions_in_range_filters_by_ex_date() -> None:
+    actions = actions_df()
+    assert len(dashboard.actions_in_range(actions, dt.date(2026, 8, 1), dt.date(2026, 9, 1))) == 1
+    assert dashboard.actions_in_range(actions, dt.date(2026, 9, 2), dt.date(2026, 9, 30)).empty
+
+
+def test_figure_marks_corporate_actions() -> None:
+    fig = dashboard.build_figure(history(), "TEST", actions_df())
+    labels = [a.text for a in fig.layout.annotations]
+    assert "Demerger 01 Sep 2026 (×0.6000)" in labels
+    assert any(s.type == "line" and s.yref == "paper" for s in fig.layout.shapes)
+
+
+def test_metrics_on_adjusted_prices_remove_the_demerger_high() -> None:
+    df = history(days=300, last_close=110)
+    df.loc[df["date"] < pd.Timestamp("2026-09-01"), ["open", "high", "low", "close"]] *= 2
+    raw_high = dashboard.compute_metrics(df).high_52w
+    adjusted = adjust_prices(df, actions_df(factor=0.5))
+    assert dashboard.compute_metrics(adjusted).high_52w < raw_high / 1.8

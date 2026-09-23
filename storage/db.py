@@ -23,8 +23,10 @@ from sqlalchemy import (
     Float,
     String,
     Table,
+    Text,
     TypeDecorator,
     create_engine,
+    delete,
     event,
     func,
     select,
@@ -100,8 +102,26 @@ class Indicator(Base):
     volume_sma_20: Mapped[float | None] = mapped_column(Float)
 
 
+class CorporateActionRow(Base):
+    """A corporate action (split, bonus, demerger...) used to build adjusted prices.
+
+    Seeded from config/corporate_actions.yaml, which is the source of truth.
+    """
+
+    __tablename__ = "corporate_actions"
+
+    symbol: Mapped[str] = mapped_column(String(32), primary_key=True)
+    ex_date: Mapped[dt.date] = mapped_column(Date, primary_key=True)
+    action_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    price_factor: Mapped[float] = mapped_column(Float, nullable=False)
+    source: Mapped[str] = mapped_column(String(255), nullable=False)
+    note: Mapped[str | None] = mapped_column(Text)
+
+
 PRICES: Table = Price.__table__  # type: ignore[assignment]
 INDICATORS: Table = Indicator.__table__  # type: ignore[assignment]
+CORPORATE_ACTIONS: Table = CorporateActionRow.__table__  # type: ignore[assignment]
+ACTION_COLUMNS = list(CORPORATE_ACTIONS.columns.keys())
 KEY_COLUMNS = ("symbol", "date")
 
 
@@ -192,6 +212,50 @@ def latest_indicator_date(symbol: str, engine: Engine | None = None) -> dt.date 
     stmt = select(func.max(INDICATORS.c.date)).where(INDICATORS.c.symbol == symbol)
     with (engine or get_engine()).connect() as conn:
         return conn.execute(stmt).scalar_one()
+
+
+def sync_corporate_actions(actions: pd.DataFrame, engine: Engine | None = None) -> set[str]:
+    """Make the corporate_actions table match `actions` exactly (the YAML is the source).
+
+    Rows no longer present are deleted. Returns the symbols whose actions were added,
+    removed or changed, so callers can fully recompute anything derived from them.
+    """
+    engine = engine or get_engine()
+    new = actions.reindex(columns=ACTION_COLUMNS)
+    new["ex_date"] = pd.to_datetime(new["ex_date"]).dt.date
+    new["price_factor"] = new["price_factor"].astype(float)
+    new = new.astype(object)
+    new = new.where(new.notna(), None)
+    new_rows = {tuple(r) for r in new.itertuples(index=False)}
+
+    with engine.begin() as conn:
+        old_rows = {tuple(r) for r in conn.execute(select(CORPORATE_ACTIONS))}
+        if old_rows == new_rows:
+            return set()
+        conn.execute(delete(CORPORATE_ACTIONS))
+        if new_rows:
+            conn.execute(
+                CORPORATE_ACTIONS.insert(),
+                [dict(zip(ACTION_COLUMNS, r, strict=True)) for r in new_rows],
+            )
+
+    changed = {row[0] for row in old_rows ^ new_rows}
+    logger.info("Synced %d corporate action(s); changed symbols: %s", len(new_rows), changed)
+    return changed
+
+
+def read_corporate_actions(symbol: str | None = None, engine: Engine | None = None) -> pd.DataFrame:
+    """Return corporate actions (for one symbol, or all), sorted by symbol and ex_date."""
+    stmt = select(CORPORATE_ACTIONS).order_by(
+        CORPORATE_ACTIONS.c.symbol, CORPORATE_ACTIONS.c.ex_date
+    )
+    if symbol is not None:
+        stmt = stmt.where(CORPORATE_ACTIONS.c.symbol == symbol)
+    with (engine or get_engine()).connect() as conn:
+        rows = conn.execute(stmt).mappings().all()
+    df = pd.DataFrame(rows, columns=ACTION_COLUMNS)
+    df["ex_date"] = pd.to_datetime(df["ex_date"])
+    return df
 
 
 def count_prices(engine: Engine | None = None) -> dict[str, int]:

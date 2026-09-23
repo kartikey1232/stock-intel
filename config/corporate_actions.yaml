@@ -1,0 +1,27 @@
+# Corporate actions used to build adjusted prices (raw prices are never modified).
+#
+# All prices dated BEFORE ex_date are multiplied by price_factor (cumulatively across
+# actions). For split and bonus, volume before ex_date is divided by price_factor;
+# for demerger and other, volume is unchanged.
+#
+#   action_type:  split | bonus | demerger | other
+#   price_factor: 0 < factor; e.g. 1:1 bonus = 0.5, 1:5 split = 0.2,
+#                 demerger = post-ex-date base price / prior close
+#   source:       where the factor comes from, or "approximate" if unverified
+#
+# IMPORTANT: Yahoo already back-adjusts most splits and bonuses (e.g. the HDFC Bank 1:1
+# bonus in Aug 2025 shows no gap). Only record an action when the raw data shows an
+# unadjusted gap -- the indicators step warns about such gaps. Recording an action Yahoo
+# already adjusted for would double-adjust history.
+
+actions:
+  - symbol: TMPV
+    ex_date: 2025-10-14
+    action_type: demerger
+    price_factor: 0.6053726825576996  # 400.00 / 660.75
+    source: NSE special pre-open price discovery session, 14 Oct 2025
+    note: >-
+      Demerger of the commercial vehicle business (now TMCV). NSE's special pre-open
+      session discovered a base price of Rs 400.00 for the passenger vehicle entity vs
+      the prior close of Rs 660.75 on 13 Oct 2025 (implied CV value ~Rs 260.75).
+      Reported by Autocar Professional and The Week; Yahoo's ex-date open is also 400.00.

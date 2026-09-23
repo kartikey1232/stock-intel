@@ -13,15 +13,18 @@ import streamlit as st
 from plotly.subplots import make_subplots
 
 from config.loader import Stock, load_watchlist
-from storage.db import read_indicators, read_prices
+from processing.adjustments import adjust_prices
+from storage.db import read_corporate_actions, read_indicators, read_prices
 
 IST = ZoneInfo("Asia/Kolkata")
 CACHE_TTL_S = 300
 DEFAULT_RANGE_DAYS = 365
 RSI_OVERBOUGHT, RSI_OVERSOLD = 70, 30
+ADJUSTED, RAW = "Adjusted", "Raw"
 
 UP_COLOR, DOWN_COLOR = "#26a69a", "#ef5350"
 SMA50_COLOR, SMA200_COLOR, BB_COLOR = "#f5a623", "#7b61ff", "rgba(120,144,156,0.8)"
+ACTION_COLOR = "#9e9e9e"
 
 
 @dataclass(frozen=True)
@@ -62,6 +65,26 @@ def cached_prices(symbol: str) -> pd.DataFrame:
 def cached_indicators(symbol: str) -> pd.DataFrame:
     """All stored indicators for `symbol`, cached."""
     return read_indicators(symbol)
+
+
+@st.cache_data(ttl=CACHE_TTL_S, show_spinner=False)
+def cached_actions(symbol: str) -> pd.DataFrame:
+    """Corporate actions for `symbol`, cached."""
+    return read_corporate_actions(symbol)
+
+
+def actions_in_range(actions: pd.DataFrame, start: dt.date, end: dt.date) -> pd.DataFrame:
+    """Corporate actions whose ex_date falls within [start, end]."""
+    dates = actions["ex_date"].dt.date
+    return actions[(dates >= start) & (dates <= end)]
+
+
+def describe_action(action: pd.Series) -> str:
+    """Short human label, e.g. 'Demerger 14 Oct 2025 (×0.6054)'."""
+    return (
+        f"{action['action_type'].capitalize()} {action['ex_date']:%d %b %Y} "
+        f"(×{action['price_factor']:.4f})"
+    )
 
 
 def merge_prices_indicators(prices: pd.DataFrame, indicators: pd.DataFrame) -> pd.DataFrame:
@@ -110,8 +133,11 @@ def missing_trading_days(dates: pd.Series) -> list[str]:
 # --- chart ------------------------------------------------------------------------
 
 
-def build_figure(df: pd.DataFrame, symbol: str) -> go.Figure:
-    """Candlestick + SMA/Bollinger overlays, volume, RSI and MACD in one shared-x figure."""
+def build_figure(df: pd.DataFrame, symbol: str, actions: pd.DataFrame | None = None) -> go.Figure:
+    """Candlestick + SMA/Bollinger overlays, volume, RSI and MACD in one shared-x figure.
+
+    Each row of `actions` is drawn as a dashed vertical line labelled at the top.
+    """
     has = {c: c in df.columns and df[c].notna().any() for c in df.columns}
     fig = make_subplots(
         rows=4,
@@ -205,6 +231,31 @@ def build_figure(df: pd.DataFrame, symbol: str) -> go.Figure:
             go.Scatter(x=x, y=df["macd_signal"], name="Signal", line={"color": SMA50_COLOR}), 4, 1
         )
 
+    for _, action in (actions if actions is not None else pd.DataFrame()).iterrows():
+        # A paper-referenced shape draws one continuous line through all four panels.
+        fig.add_shape(
+            type="line",
+            x0=action["ex_date"],
+            x1=action["ex_date"],
+            xref="x",
+            y0=0,
+            y1=1,
+            yref="paper",
+            line={"color": ACTION_COLOR, "dash": "dash", "width": 1},
+        )
+        fig.add_annotation(
+            x=action["ex_date"],
+            xref="x",
+            y=1,
+            yref="paper",
+            text=describe_action(action),
+            showarrow=False,
+            xanchor="left",
+            yanchor="top",
+            font={"size": 11, "color": ACTION_COLOR},
+            bgcolor="rgba(0,0,0,0)",
+        )
+
     fig.update_xaxes(rangebreaks=[{"bounds": ["sat", "mon"]}, {"values": missing_trading_days(x)}])
     fig.update_layout(
         height=950,
@@ -260,8 +311,8 @@ def render_metrics(m: Metrics) -> None:
         )
 
 
-def sidebar(stocks: list[Stock]) -> Stock:
-    """Render the stock selector and reload button; return the chosen stock."""
+def sidebar(stocks: list[Stock]) -> tuple[Stock, str]:
+    """Render the stock selector, candle mode toggle and reload button."""
     st.sidebar.title("stock-intel")
     by_symbol = {s.symbol: s for s in stocks}
     symbol = st.sidebar.selectbox(
@@ -269,10 +320,17 @@ def sidebar(stocks: list[Stock]) -> Stock:
         list(by_symbol),
         format_func=lambda s: f"{s} · {by_symbol[s].name}",
     )
+    mode = st.sidebar.radio(
+        "Candles",
+        [ADJUSTED, RAW],
+        horizontal=True,
+        help="Adjusted prices remove jumps from splits, bonuses and demergers recorded in "
+        "config/corporate_actions.yaml. Raw prices are exactly as Yahoo returned them.",
+    )
     if st.sidebar.button("Reload from database", width="stretch"):
         st.cache_data.clear()
         st.rerun()
-    return by_symbol[symbol]
+    return by_symbol[symbol], mode
 
 
 def date_range_picker(first: dt.date, last: dt.date) -> tuple[dt.date, dt.date]:
@@ -295,7 +353,7 @@ def date_range_picker(first: dt.date, last: dt.date) -> tuple[dt.date, dt.date]:
 def main() -> None:
     """Render the dashboard."""
     st.set_page_config(page_title="stock-intel", page_icon="📈", layout="wide")
-    stock = sidebar(cached_watchlist())
+    stock, mode = sidebar(cached_watchlist())
 
     prices = cached_prices(stock.symbol)
     st.header(f"{stock.name} ({stock.symbol})")
@@ -314,22 +372,39 @@ def main() -> None:
             "Indicators haven't been computed for this stock yet, so overlays, RSI and MACD "
             "are hidden. Run `uv run python -m processing.indicators`."
         )
-    df = merge_prices_indicators(prices, indicators)
+    actions = cached_actions(stock.symbol)
+    adjusted = merge_prices_indicators(adjust_prices(prices, actions), indicators)
 
-    render_metrics(compute_metrics(df))
+    # Metrics always use adjusted prices so 52-week ranges and SMA gaps are comparable.
+    render_metrics(compute_metrics(adjusted))
 
+    df = adjusted if mode == ADJUSTED else merge_prices_indicators(prices, indicators)
     first, last = df["date"].min().date(), df["date"].max().date()
     start, end = date_range_picker(first, last)
     view = filter_range(df, start, end)
     if view.empty:
         st.info("No trading days in the selected range. Try widening it.")
         return
-    st.plotly_chart(build_figure(view, stock.symbol), width="stretch")
+    visible_actions = actions_in_range(actions, start, end)
+    st.plotly_chart(build_figure(view, stock.symbol, visible_actions), width="stretch")
+
+    for _, action in visible_actions.iterrows():
+        effect = (
+            "prices before this date are scaled so the chart is continuous"
+            if mode == ADJUSTED
+            else "raw candles show the jump; indicator overlays are still computed from "
+            "adjusted prices, so they won't line up with candles before this date"
+        )
+        st.info(
+            f"**{describe_action(action)}** — {effect}. Source: {action['source']}.",
+            icon="ℹ️",
+        )
 
     fetched = prices["fetched_at"].max().astimezone(IST)
     st.caption(
         f"Data through {last:%d %b %Y} · last fetched {fetched:%d %b %Y, %H:%M} IST · "
-        "metrics use the full history; the chart uses the selected range."
+        f"metrics use full adjusted history; the chart shows {mode.lower()} prices "
+        "for the selected range."
     )
 
 

@@ -1,5 +1,8 @@
 """Daily update: collect prices, then recompute indicators, for the whole watchlist.
 
+Corporate actions are synced from config/corporate_actions.yaml before indicators are
+computed; symbols whose actions changed get a full indicator recompute.
+
 Indicators run for every symbol even if some price downloads failed: symbols that
 failed simply keep their previous data, and recomputing them is harmless.
 
@@ -14,6 +17,7 @@ import time
 
 from collectors.prices import collect_all, log_summary
 from config.loader import load_watchlist
+from processing.adjustments import sync_actions_from_config
 from processing.indicators import process_all
 from storage.db import init_db
 from utils import setup_logging
@@ -32,7 +36,10 @@ def run(full_indicators: bool = False) -> int:
     log_summary(price_summary)
 
     logger.info("Step 2/2: computing indicators%s", " (full recompute)" if full_indicators else "")
-    indicator_failures = process_all([s.symbol for s in stocks], full=full_indicators)
+    changed_actions = sync_actions_from_config()
+    indicator_failures = process_all(
+        [s.symbol for s in stocks], full=full_indicators, force_full=changed_actions
+    )
 
     failed = sorted(set(price_summary.failures) | set(indicator_failures))
     elapsed = time.monotonic() - started

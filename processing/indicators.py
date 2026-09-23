@@ -1,6 +1,10 @@
 """Compute technical indicators from stored prices and upsert them.
 
-Indicators use the unadjusted OHLC (as charting platforms do). Recursive indicators
+Indicators are computed from corporate-action adjusted OHLC (see processing.adjustments),
+so splits and demergers don't show up as crashes. Raw prices are also checked for large
+overnight gaps with no recorded corporate action, which are logged as warnings.
+
+Recursive indicators
 (EMA, MACD, RSI, ATR) depend on all prior bars, so incremental runs recompute over
 LOOKBACK_BARS of history before the last stored indicator date. That is far more than
 the 200 bars SMA-200 needs, and long enough for the exponential smoothing to converge
@@ -18,7 +22,14 @@ import pandas as pd
 import pandas_ta as ta
 
 from config.loader import load_watchlist
-from storage.db import init_db, latest_indicator_date, read_prices, upsert_indicators
+from processing.adjustments import adjust_prices, sync_actions_from_config, warn_unrecorded_gaps
+from storage.db import (
+    init_db,
+    latest_indicator_date,
+    read_corporate_actions,
+    read_prices,
+    upsert_indicators,
+)
 from utils import setup_logging
 
 logger = logging.getLogger(__name__)
@@ -93,10 +104,13 @@ def _column(frame: pd.DataFrame | None, prefix: str) -> pd.Series | None:
 
 def process_symbol(symbol: str, full: bool = False) -> int:
     """Compute and upsert indicators for one symbol. Returns rows written."""
-    prices = read_prices(symbol)
-    if prices.empty:
+    raw = read_prices(symbol)
+    if raw.empty:
         logger.warning("%s: no prices stored; run collectors.prices first", symbol)
         return 0
+    actions = read_corporate_actions(symbol)
+    warn_unrecorded_gaps(symbol, raw, actions)
+    prices = adjust_prices(raw, actions)
 
     since = None if full else latest_indicator_date(symbol)
     if since is not None:
@@ -119,15 +133,19 @@ def process_symbol(symbol: str, full: bool = False) -> int:
     return written
 
 
-def process_all(symbols: list[str], full: bool = False) -> dict[str, str]:
+def process_all(
+    symbols: list[str], full: bool = False, force_full: set[str] | None = None
+) -> dict[str, str]:
     """Compute indicators for every symbol; one failure never stops the others.
 
-    Returns a mapping of failed symbol -> reason (empty if all succeeded).
+    Symbols in `force_full` (e.g. whose corporate actions just changed) are fully
+    recomputed even when `full` is False. Returns failed symbol -> reason.
     """
+    force_full = force_full or set()
     failures: dict[str, str] = {}
     for symbol in symbols:
         try:
-            process_symbol(symbol, full=full)
+            process_symbol(symbol, full=full or symbol in force_full)
         except Exception as exc:
             logger.exception("%s: indicator computation failed", symbol)
             failures[symbol] = f"{type(exc).__name__}: {exc}"
@@ -145,7 +163,8 @@ def main(argv: list[str] | None = None) -> int:
 
     setup_logging()
     init_db()
-    failures = process_all([s.symbol for s in load_watchlist()], full=args.full)
+    changed = sync_actions_from_config()
+    failures = process_all([s.symbol for s in load_watchlist()], full=args.full, force_full=changed)
     return 1 if failures else 0
 
 
