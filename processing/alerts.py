@@ -5,8 +5,10 @@ Alert types and thresholds are in config/alerts.yaml. For a session date d:
 - results: a results filing first seen on d, for the stock's latest quarter, whose board
   date is at most `max_age_days` old (so backfilled history never alerts), with YoY/QoQ
   headline figures.
-- price_move: |close-to-close move| above `threshold_pct`, or a gap signal, with that
-  session's news count and sentiment and any filing dated d.
+- price_move: |close-to-close move| above `threshold_pct`, or a gap signal, with Nifty 50's
+  move that day, that session's news count and sentiment (or "no news data" before the
+  stock's news coverage starts) and any filing dated d. When `market_wide_min_stocks`
+  watchlist stocks move the same way that day, each such alert says "market-wide move".
 - price_signal: the configured signals on d. SMA crosses respect min_gap_pct (shown on
   their confirmation day, as on the dashboard).
 - news_shift: the 7-day story-weighted sentiment moves at least `threshold` away from the
@@ -26,6 +28,7 @@ day never stores an alert twice. When days are rebuilt afterwards, the backtest 
 uses today's full event study (a note on a past day can include later events).
 
 Run with:  uv run python -m processing.alerts [--date YYYY-MM-DD] [--days N] [--digest]
+                                            [--rebuild]
 """
 
 import argparse
@@ -39,6 +42,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 from config.alerts import AlertsConfig, load_alerts_config
+from config.backtest import load_backtest_config
 from config.loader import Stock, load_watchlist
 from config.market_calendar import latest_completed_session, load_holidays
 from config.news_sources import load_news_sources
@@ -50,6 +54,7 @@ from processing.results import changes
 from processing.sentiment import TradingCalendar, news_time, session_for, story_weighted_average
 from processing.signals import describe_signal_value, display_signals
 from storage.db import (
+    delete_unsent_alerts,
     init_db,
     insert_new_alerts,
     read_alerts,
@@ -72,9 +77,11 @@ IST = ZoneInfo("Asia/Kolkata")
 PIPELINE_SYMBOL = "*"
 GAP_SIGNALS = ("gap_up", "gap_down")
 # Words that would make an alert read as advice. Alert text must never match.
+# Whole words only, and not "buyback"/"buy back"/"buy-back", the noun "buy-in" or "sell-off", which
+# describe corporate actions and market moves. Past tense ("sold") describes, not advises.
 FORBIDDEN_RE = re.compile(
-    r"\b(?:buy|buying|sell|selling|sold|accumulate|go long|go short|shorting|target price|"
-    r"recommend\w*|stop[- ]loss|take profit)\b",
+    r"\b(?:buy(?!(?:[- ]?back|-in)\b)|buying|sell(?![- ]?off\b)|selling|accumulate|go long|"
+    r"go short|shorting|target price|recommend\w*|stop[- ]loss|take profit)\b",
     re.IGNORECASE,
 )
 # Third-party headlines that read like tips are never quoted in alerts.
@@ -102,6 +109,9 @@ class Context:
     runs: pd.DataFrame = field(default_factory=pd.DataFrame)
     backtest: pd.DataFrame = field(default_factory=pd.DataFrame)
     calendar: TradingCalendar = field(default_factory=lambda: TradingCalendar([]))
+    benchmark: pd.DataFrame = field(default_factory=pd.DataFrame)  # Nifty 50 daily bars
+    news_start: dict[str, dt.date] = field(default_factory=dict)  # first session with news
+    collection_start: dt.date | None = None  # when news collection began
 
 
 def load_context(stocks: list[Stock]) -> Context:
@@ -119,7 +129,20 @@ def load_context(stocks: list[Stock]) -> Context:
     ctx.pending, ctx.runs = read_pending_actions(), read_pipeline_runs()
     ctx.calendar = TradingCalendar(trading_dates())
     ctx.backtest, _ = run_event_study(stocks)
+    ctx.benchmark = read_prices(load_backtest_config().benchmark)
+    set_news_coverage(ctx)
     return ctx
+
+
+def set_news_coverage(ctx: Context) -> None:
+    """Each stock's first session with news, and the date news collection began."""
+    daily = ctx.news_daily
+    if not daily.empty:
+        firsts = daily.groupby("symbol")["session_date"].min()
+        ctx.news_start = {s: pd.Timestamp(d).date() for s, d in firsts.items()}
+    seen = [f["first_seen_at"] for f in ctx.news.values() if len(f)]
+    if seen:
+        ctx.collection_start = ist_dates(pd.concat(seen)).min()
 
 
 # --- text helpers ------------------------------------------------------------------
@@ -139,27 +162,41 @@ def ist_dates(moments: pd.Series) -> pd.Series:
 
 
 def backtest_note(ctx: Context, signal: str) -> str:
-    """One line on how this signal did historically, as an attention flag."""
-    h = ctx.config.note_horizon
+    """One line on how this signal did historically, as an attention flag. It quotes the
+    in-sample result at the horizons of the out-of-sample test it cites (if any), else at
+    backtest_note.horizon."""
     label = next((r.label for r in ctx.signal_rules if r.name == signal), signal)
-    rows = ctx.backtest
-    row = rows[(rows["signal"] == signal) & (rows["horizon"] == h)] if len(rows) else rows
+    clauses = [horizon_clause(ctx.backtest, signal, h) for h in ctx.config.note_horizons(signal)]
+    oos = ctx.config.out_of_sample.get(signal)
+    return f"Backtest ({label}): {'; '.join(clauses)}{'; ' + oos.status if oos else ''}."
+
+
+def days(h: int) -> str:
+    """'1 trading day' / '5 trading days'."""
+    return f"{h} trading day{'' if h == 1 else 's'}"
+
+
+def horizon_clause(results: pd.DataFrame, signal: str, h: int) -> str:
+    """The in-sample verdict for `signal` at horizon `h`, in words."""
+    row = (
+        results[(results["signal"] == signal) & (results["horizon"] == h)]
+        if len(results)
+        else results
+    )
     if row.empty:
-        text = "no backtest result yet"
+        text = f"no backtest result at {days(h)} yet"
     else:
         r = row.iloc[0]
         n = int(r["n"])
         text = {
             TOO_FEW: f"too few past events to judge (n={n})",
-            "no clear difference": f"historically no edge vs doing nothing at {h} trading days "
-            f"(n={n})",
+            "no clear difference": f"historically no edge vs doing nothing at {days(h)} (n={n})",
             "beats baseline (CI > 0)": f"historically moved further in the signal's direction "
-            f"than an average day at {h} trading days (n={n}), possibly by chance",
+            f"than an average day at {days(h)} (n={n}), possibly by chance",
             "worse than baseline (CI < 0)": f"historically moved less in the signal's direction "
-            f"than an average day at {h} trading days (n={n}), possibly by chance",
+            f"than an average day at {days(h)} (n={n}), possibly by chance",
         }.get(r["note"], f"n={n}")
-    oos = ctx.config.out_of_sample.get(signal)
-    return f"Backtest ({label}): {text}{'; ' + oos if oos else ''}."
+    return text
 
 
 def pct(value: float | None) -> str:
@@ -187,10 +224,15 @@ def alert(
 
 
 def session_news(ctx: Context, symbol: str, day: dt.date) -> str:
-    """That session's news count and sentiment, as a sentence."""
+    """That session's news count and sentiment, as a sentence. Before a stock's first
+    session with news, says there's no news data rather than no news."""
     daily = ctx.news_daily
-    if daily.empty:
-        return "No linked news that session."
+    start = ctx.news_start.get(symbol)
+    if daily.empty or start is None or day < start:
+        began = (
+            f" (collection started {ctx.collection_start:%d %b %Y})" if ctx.collection_start else ""
+        )
+        return f"No news data for this date{began}."
     row = daily[
         (daily["symbol"] == symbol) & (pd.to_datetime(daily["session_date"]).dt.date == day)
     ]
@@ -212,38 +254,107 @@ def day_filings(ctx: Context, symbol: str, day: dt.date) -> str:
     return "Filing that day: " + "; ".join(str(s) for s in own["subject"]) + "."
 
 
-def price_move_alerts(ctx: Context, stock: Stock, day: dt.date) -> list[dict]:
-    """A big close-to-close move or a gap signal on `day`."""
-    rule = ctx.config.rule("price_move")
-    bars = ctx.prices.get(stock.symbol, pd.DataFrame())
-    if rule is None or bars.empty:
-        return []
+def close_move(bars: pd.DataFrame, day: dt.date) -> tuple[float, float] | None:
+    """(close-to-close move as a fraction, close) on `day`, or None without both bars."""
+    if bars.empty:
+        return None
     bars = bars.sort_values("date").reset_index(drop=True)
-    at = bars.index[bars["date"].dt.date == day]
+    at = bars.index[pd.to_datetime(bars["date"]).dt.date == day]
     if len(at) == 0 or at[0] == 0:
+        return None
+    close = float(bars.at[at[0], "close"])
+    return close / float(bars.at[at[0] - 1, "close"]) - 1, close
+
+
+def open_gap(bars: pd.DataFrame, day: dt.date) -> float | None:
+    """Open on `day` vs the previous close, as a fraction (None without both bars)."""
+    if bars.empty:
+        return None
+    bars = bars.sort_values("date").reset_index(drop=True)
+    at = bars.index[pd.to_datetime(bars["date"]).dt.date == day]
+    if len(at) == 0 or at[0] == 0:
+        return None
+    return float(bars.at[at[0], "open"]) / float(bars.at[at[0] - 1, "close"]) - 1
+
+
+def nifty_sentence(move: tuple[float, float] | None, gap: float | None) -> str:
+    """Nifty's close-to-close move that day, plus its opening move for gap alerts."""
+    if move is None:
+        return "No Nifty bar for this date."
+    opened = f" (it opened {pct(gap)})" if gap is not None else ""
+    return f"Nifty {pct(move[0])} the same day{opened}."
+
+
+@dataclass
+class Move:
+    """A stock's candidate price_move alert for one day."""
+
+    stock: Stock
+    move: float
+    close: float
+    gaps: pd.DataFrame
+
+    @property
+    def direction(self) -> int:
+        """+1 up, -1 down: by the gap if the stock gapped, else by the close-to-close move."""
+        if len(self.gaps):
+            return 1 if self.gaps["value"].iloc[0] > 0 else -1
+        return 1 if self.move > 0 else -1
+
+
+def candidate_moves(ctx: Context, day: dt.date) -> list[Move]:
+    """Stocks with a big close-to-close move or a gap signal on `day`."""
+    rule = ctx.config.rule("price_move")
+    if rule is None:
         return []
-    i = at[0]
-    close, prev = bars.at[i, "close"], bars.at[i - 1, "close"]
-    move = close / prev - 1
-    sig = ctx.signals.get(stock.symbol, pd.DataFrame())
-    gaps = sig[(pd.to_datetime(sig["date"]).dt.date == day) & sig["signal"].isin(GAP_SIGNALS)]
-    if abs(move) * 100 <= rule.params["threshold_pct"] and gaps.empty:
+    moves = []
+    for stock in ctx.stocks:
+        found = close_move(ctx.prices.get(stock.symbol, pd.DataFrame()), day)
+        if found is None:
+            continue
+        sig = ctx.signals.get(stock.symbol, pd.DataFrame())
+        gaps = sig[(pd.to_datetime(sig["date"]).dt.date == day) & sig["signal"].isin(GAP_SIGNALS)]
+        if abs(found[0]) * 100 > rule.params["threshold_pct"] or len(gaps):
+            moves.append(Move(stock, found[0], found[1], gaps))
+    return moves
+
+
+def price_move_alerts(ctx: Context, day: dt.date) -> list[dict]:
+    """Big moves and gaps on `day`, each with Nifty's move that day, the session's news and
+    filings, "market-wide move" when enough watchlist stocks moved the same way, and the
+    gap's backtest note."""
+    moves = candidate_moves(ctx, day)
+    if not moves:
         return []
-    parts = [
-        f"{stock.symbol} {'rose' if move > 0 else 'fell'} {abs(move) * 100:.1f}% on "
-        f"{day:%d %b} (close ₹{close:,.2f})."
-    ]
-    for g in gaps.itertuples():
-        side = "above" if g.signal == "gap_up" else "below"
-        parts.append(f"It opened {abs(g.value):.1f}% {side} the previous close.")
-    parts.append(session_news(ctx, stock.symbol, day))
-    parts.append(day_filings(ctx, stock.symbol, day))
-    if gaps.empty:
-        parts.append("A price move on its own isn't a tested signal.")
-    for g in gaps.itertuples():
-        parts.append(backtest_note(ctx, g.signal))
-    text = " ".join(p for p in parts if p)
-    return [alert(ctx, stock.symbol, "price_move", f"{day}:price_move", day, text)]
+    wide = ctx.config.rules["price_move"].params.get("market_wide_min_stocks", 3)
+    counts = {d: sum(m.direction == d for m in moves) for d in (1, -1)}
+    nifty = close_move(ctx.benchmark, day)
+    nifty_gap = open_gap(ctx.benchmark, day)
+    rows = []
+    for m in moves:
+        symbol = m.stock.symbol
+        parts = [
+            f"{symbol} {'rose' if m.move > 0 else 'fell'} {abs(m.move) * 100:.1f}% on "
+            f"{day:%d %b} (close ₹{m.close:,.2f}).",
+            nifty_sentence(nifty, nifty_gap if len(m.gaps) else None),
+        ]
+        if counts[m.direction] >= wide:
+            parts.append(
+                f"Market-wide move: {counts[m.direction]} watchlist stocks moved "
+                f"{'up' if m.direction > 0 else 'down'} the same day."
+            )
+        for g in m.gaps.itertuples():
+            side = "above" if g.signal == "gap_up" else "below"
+            parts.append(f"It opened {abs(g.value):.1f}% {side} the previous close.")
+        parts.append(session_news(ctx, symbol, day))
+        parts.append(day_filings(ctx, symbol, day))
+        if m.gaps.empty:
+            parts.append("A price move on its own isn't a tested signal.")
+        for g in m.gaps.itertuples():
+            parts.append(backtest_note(ctx, g.signal))
+        text = " ".join(p for p in parts if p)
+        rows.append(alert(ctx, symbol, "price_move", f"{day}:price_move", day, text))
+    return rows
 
 
 def price_signal_alerts(ctx: Context, stock: Stock, day: dt.date) -> list[dict]:
@@ -429,10 +540,9 @@ def pipeline_alerts(ctx: Context, day: dt.date) -> list[dict]:
 
 def build_alerts(ctx: Context, day: dt.date, latest: bool) -> list[dict]:
     """Every alert for session `day`. Pending actions only when `latest` (no history)."""
-    rows = []
+    rows = price_move_alerts(ctx, day)
     for stock in ctx.stocks:
         rows += results_alerts(ctx, stock, day)
-        rows += price_move_alerts(ctx, stock, day)
         rows += price_signal_alerts(ctx, stock, day)
         rows += news_shift_alerts(ctx, stock, day)
         if latest:
@@ -508,12 +618,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--date", type=dt.date.fromisoformat, help="session date (default: latest)")
     parser.add_argument("--days", type=int, default=1, help="build the last N trading days")
     parser.add_argument("--digest", action="store_true", help="print the digest")
+    parser.add_argument(
+        "--rebuild",
+        action="store_true",
+        help="first delete these days' unsent alerts (after changing templates); sent ones stay",
+    )
     args = parser.parse_args(argv)
     setup_logging()
     init_db()
     until = args.date or latest_completed_session(dt.datetime.now(dt.UTC), load_holidays())
     days = recent_sessions(args.days, until)
     stocks = load_watchlist()
+    if args.rebuild:
+        logger.info(
+            "Deleted %d unsent alert(s) for %s to %s",
+            delete_unsent_alerts(days[0], days[-1]),
+            days[0],
+            days[-1],
+        )
     run(stocks, days)
     if args.digest:
         print(digest(days[-1], stocks, read_alerts(days[-1], days[-1]), read_pipeline_runs()))

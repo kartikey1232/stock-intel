@@ -26,12 +26,25 @@ class AlertRule:
 
 
 @dataclass(frozen=True)
+class OutOfSample:
+    """A signal's registered out-of-sample result: the horizons tested and the verdict."""
+
+    horizons: tuple[int, ...]
+    status: str
+
+
+@dataclass(frozen=True)
 class AlertsConfig:
     """All alert rules plus the backtest-note settings."""
 
     rules: dict[str, AlertRule]
     note_horizon: int
-    out_of_sample: dict[str, str]
+    out_of_sample: dict[str, OutOfSample]
+
+    def note_horizons(self, signal: str) -> tuple[int, ...]:
+        """Horizons a signal's backtest note quotes: the out-of-sample ones if tested."""
+        oos = self.out_of_sample.get(signal)
+        return oos.horizons if oos else (self.note_horizon,)
 
     def rule(self, alert_type: str) -> AlertRule | None:
         """The rule for `alert_type` if it's enabled."""
@@ -67,6 +80,17 @@ def load_alerts_config(path: Path = DEFAULT_ALERTS_PATH) -> AlertsConfig:
     horizon = note.get("horizon", 20)
     if not isinstance(horizon, int) or horizon <= 0:
         raise AlertConfigError(f"{path}: backtest_note.horizon must be a positive integer")
-    return AlertsConfig(
-        rules, horizon, {str(k): str(v) for k, v in (note.get("out_of_sample") or {}).items()}
-    )
+    out_of_sample = {}
+    for signal, spec in (note.get("out_of_sample") or {}).items():
+        horizons = spec.get("horizons") if isinstance(spec, dict) else None
+        if (
+            not isinstance(horizons, list)
+            or not horizons
+            or not all(isinstance(h, int) and h > 0 for h in horizons)
+            or not str(spec.get("status") or "").strip()
+        ):
+            raise AlertConfigError(
+                f"{path}: backtest_note.out_of_sample.{signal} needs horizons and a status"
+            )
+        out_of_sample[str(signal)] = OutOfSample(tuple(horizons), str(spec["status"]))
+    return AlertsConfig(rules, horizon, out_of_sample)

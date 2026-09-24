@@ -30,7 +30,11 @@ def bars(last_close: float = 100.0, last_open: float = 100.0) -> pd.DataFrame:
 
 
 def backtest(**notes: tuple[int, str]) -> pd.DataFrame:
-    rows = [{"signal": s, "horizon": 20, "n": n, "note": note} for s, (n, note) in notes.items()]
+    rows = [
+        {"signal": s, "horizon": h, "n": n, "note": note}
+        for s, (n, note) in notes.items()
+        for h in (1, 5, 20, 60)
+    ]
     return pd.DataFrame(rows)
 
 
@@ -54,9 +58,15 @@ def context(**overrides) -> al.Context:
         high_52w_breakout=(29, TOO_FEW),
     )
     ctx.calendar = TradingCalendar([d.date() for d in DAYS])
+    ctx.benchmark = nifty(100.0)
     for key, value in overrides.items():
         setattr(ctx, key, value)
+    al.set_news_coverage(ctx)
     return ctx
+
+
+def nifty(last_close: float) -> pd.DataFrame:
+    return bars(last_close)
 
 
 def signal_rows(*rows: tuple[str, str, float]) -> pd.DataFrame:
@@ -90,19 +100,52 @@ def test_big_move_with_gap_carries_news_filing_and_a_backtest_note() -> None:
         news_daily=news,
         signals={"INFY": signal_rows(("gap_down", "bearish", -4.0))},
     )
-    [a] = al.price_move_alerts(ctx, INFY, DAY)
-    assert a["text"].startswith("INFY fell 4.5% on 24 Sep (close ₹95.50).")
+    [a] = al.price_move_alerts(ctx, DAY)
+    assert a["text"].startswith(
+        "INFY fell 4.5% on 24 Sep (close ₹95.50). Nifty +0.0% the same day (it opened +0.0%)."
+    )
     assert "opened 4.0% below the previous close" in a["text"]
     assert "News that session: 2 stories, sentiment -0.41." in a["text"]
     assert "Filing that day: Board meeting on 24 Sep." in a["text"]
+    # H1 was tested at 5 and 20 days, so the note quotes exactly those horizons.
+    assert "historically no edge vs doing nothing at 5 trading days (n=40)" in a["text"]
     assert "historically no edge vs doing nothing at 20 trading days (n=40)" in a["text"]
     assert "not confirmed out of sample (docs/hypotheses.md H1)" in a["text"]
 
 
 def test_small_move_without_gap_is_quiet_and_plain_moves_say_untested() -> None:
-    assert al.price_move_alerts(context(prices={"INFY": bars(102.0)}), INFY, DAY) == []
-    [a] = al.price_move_alerts(context(prices={"INFY": bars(104.0)}), INFY, DAY)
+    assert al.price_move_alerts(context(prices={"INFY": bars(102.0)}), DAY) == []
+    [a] = al.price_move_alerts(context(prices={"INFY": bars(104.0)}, benchmark=nifty(101.2)), DAY)
     assert "rose 4.0%" in a["text"] and "isn't a tested signal" in a["text"]
+    assert "Nifty +1.2% the same day." in a["text"]
+    assert "Market-wide" not in a["text"]  # one stock isn't the market
+
+
+def test_dates_before_news_coverage_say_no_news_data() -> None:
+    news = pd.DataFrame(
+        [{"symbol": "INFY", "session_date": DAY, "story_count": 2, "weighted_score": 0.1}]
+    )
+    articles = pd.DataFrame({"first_seen_at": [pd.Timestamp("2026-09-23 06:00", tz=UTC)]})
+    ctx = context(prices={"INFY": bars(104.0)}, news_daily=news, news={"INFY": articles})
+    earlier = DAY - dt.timedelta(days=1)
+    assert al.session_news(ctx, "INFY", earlier) == (
+        "No news data for this date (collection started 23 Sep 2026)."
+    )
+    assert al.session_news(ctx, "INFY", DAY).startswith("News that session: 2 stories")
+
+
+def test_three_stocks_moving_the_same_way_is_market_wide() -> None:
+    stocks = [Stock(s, f"{s}.NS", s, "IT", (s,)) for s in ("A", "B", "C", "D")]
+    prices = {"A": bars(104.0), "B": bars(100.5, 103.5), "C": bars(105.0), "D": bars(96.0)}
+    gaps = pd.DataFrame(columns=["date", "signal", "direction", "value"])
+    signals = {s.symbol: gaps for s in stocks} | {"B": signal_rows(("gap_up", "bullish", 3.5))}
+    ctx = context(stocks=stocks, prices=prices, signals=signals, benchmark=nifty(102.0))
+    texts = {a["symbol"]: a["text"] for a in al.price_move_alerts(ctx, DAY)}
+    for up in ("A", "B", "C"):  # B only rose 0.5% at the close but gapped up 3.5%
+        assert "Market-wide move: 3 watchlist stocks moved up the same day." in texts[up]
+    assert "Market-wide" not in texts["D"]
+    assert "Nifty +2.0% the same day (it opened +0.0%)." in texts["B"]  # B gapped
+    assert "Nifty +2.0% the same day." in texts["A"]
 
 
 def test_price_signals_get_a_note_and_too_few_events_say_so() -> None:
@@ -121,7 +164,12 @@ def test_price_signals_get_a_note_and_too_few_events_say_so() -> None:
 # --- news shift --------------------------------------------------------------------
 
 
-def news_setup(scores_7d: float) -> al.Context:
+def news_setup(
+    scores_7d: float,
+    first_title: str = "Infosys wins large deal",
+    score_sign: int = 1,
+    days_back: int = 0,
+) -> al.Context:
     daily = []
     for d in DAYS:
         recent = d.date() > DAY - dt.timedelta(days=7)
@@ -134,7 +182,7 @@ def news_setup(scores_7d: float) -> al.Context:
             }
         )
     titles = [
-        "Infosys wins large deal",
+        first_title,
         "Buy Infosys, target ₹2,000: broker",
         "Infosys raises guidance",
         "Infosys margins improve",
@@ -147,10 +195,10 @@ def news_setup(scores_7d: float) -> al.Context:
                 "story_id": None,
                 "title": t,
                 "source": "Mint",
-                "published_at": pd.Timestamp(DAY - dt.timedelta(days=i % 3), tz=UTC)
+                "published_at": pd.Timestamp(DAY - dt.timedelta(days=days_back + i % 3), tz=UTC)
                 + pd.Timedelta(hours=4),
                 "first_seen_at": pd.Timestamp(DAY, tz=UTC) + pd.Timedelta(hours=5),
-                "score": 0.9 - 0.1 * i,
+                "score": score_sign * (0.9 - 0.1 * i),
             }
             for i, t in enumerate(titles)
         ]
@@ -272,9 +320,7 @@ def test_advice_like_text_is_refused(monkeypatch) -> None:
     monkeypatch.setattr(
         al,
         "price_move_alerts",
-        lambda ctx, s, d: [
-            al.alert(ctx, "INFY", "price_move", "x", d, "INFY rose 5%: time to buy.")
-        ],
+        lambda ctx, d: [al.alert(ctx, "INFY", "price_move", "x", d, "INFY rose 5%: time to buy.")],
     )
     with pytest.raises(ValueError, match="advice"):
         al.build_alerts(context(), DAY, latest=True)
@@ -284,6 +330,49 @@ def test_advice_like_text_is_refused(monkeypatch) -> None:
 def test_forbidden_words(word: str) -> None:
     assert al.FORBIDDEN_RE.search(f"text with {word} in it")
     assert not al.FORBIDDEN_RE.search("historically no edge vs doing nothing")
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "buyback",
+        "Buy-back of shares",
+        "a buy back offer",
+        "market sell-off",
+        "selloff",
+        "FIIs sold ₹2,000 crore",
+        "buyer",
+        "seller",
+    ],
+)
+def test_nouns_and_descriptions_are_not_advice(phrase: str) -> None:
+    assert not al.FORBIDDEN_RE.search(phrase)
+
+
+def test_a_buyback_corporate_action_alert_is_allowed() -> None:
+    pending = pd.DataFrame(
+        [
+            {
+                "id": "p1",
+                "symbol": "INFY",
+                "action_type": "buyback",
+                "ratio": None,
+                "ex_date": dt.date(2026, 10, 5),
+                "status": "upcoming",
+            }
+        ]
+    )
+    [a] = al.build_alerts(context(pending=pending), DAY, latest=True)
+    assert a["text"].startswith("INFY: buyback detected in a filing")
+
+
+def test_a_sell_off_headline_is_quoted_and_counted() -> None:
+    # Headlines dated before the first shifted day (23 Sep), so they're in its 7-day window.
+    ctx = news_setup(
+        -0.6, first_title="Markets sell-off hits Infosys shares", score_sign=-1, days_back=1
+    )
+    [a] = [a for d in DAYS[-10:] for a in al.news_shift_alerts(ctx, INFY, d.date())]
+    assert '"Markets sell-off hits Infosys shares" (Mint)' in a["text"]
 
 
 @pytest.fixture
@@ -360,3 +449,27 @@ def test_run_end_to_end_on_a_database(engine: Engine) -> None:
     assert "Filing that day: Board meeting." in stored.at["price_move", "text"]
     text = al.digest(DAY, [INFY], db.read_alerts(DAY, DAY), db.read_pipeline_runs())
     assert "had failures: news: sentiment" in text
+
+
+def test_rebuild_replaces_unsent_alerts_but_keeps_sent_ones(engine: Engine) -> None:
+    row = {
+        "symbol": "INFY",
+        "alert_type": "price_move",
+        "alert_date": DAY,
+        "severity": "normal",
+        "created_at": dt.datetime.now(UTC),
+    }
+    db.insert_new_alerts(
+        [
+            {**row, "subject": "a", "text": "old", "sent_at": None},
+            {**row, "subject": "b", "text": "sent", "sent_at": dt.datetime.now(UTC)},
+        ]
+    )
+    assert db.delete_unsent_alerts(DAY, DAY) == 1
+    assert db.read_alerts(DAY, DAY)["subject"].tolist() == ["b"]
+
+
+def test_one_day_horizon_is_singular() -> None:
+    ctx = context(backtest=backtest(gap_up=(43, "worse than baseline (CI < 0)")))
+    note = al.backtest_note(ctx, "gap_up")
+    assert "at 1 trading day (n=" in note and "trading days" not in note

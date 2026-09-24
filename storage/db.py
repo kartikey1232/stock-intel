@@ -642,6 +642,15 @@ def read_alerts(
         )
 
 
+def delete_unsent_alerts(start: dt.date, end: dt.date, engine: Engine | None = None) -> int:
+    """Delete alerts dated in [start, end] that were never sent (sent ones are kept)."""
+    stmt = delete(ALERTS).where(
+        ALERTS.c.alert_date >= start, ALERTS.c.alert_date <= end, ALERTS.c.sent_at.is_(None)
+    )
+    with (engine or get_engine()).begin() as conn:
+        return conn.execute(stmt).rowcount or 0
+
+
 def unsent_alerts(
     up_to: dt.date, severity: str | None = None, engine: Engine | None = None
 ) -> pd.DataFrame:

@@ -11,6 +11,10 @@ alerts:
     enabled: true
     severity: normal
     threshold_pct: 3.0
+    # When this many watchlist stocks have a price_move alert in the same direction on
+    # one day (by gap direction if they gapped, else by the close-to-close move), each of
+    # those alerts says "market-wide move".
+    market_wide_min_stocks: 3
   price_signal:         # these signals (SMA crosses respect min_gap_pct in config/signals.yaml)
     enabled: true
     severity: normal
@@ -31,8 +35,13 @@ alerts:
 
 # The one-line backtest note on price-signal alerts (processing/backtest.py, in sample).
 backtest_note:
-  horizon: 20           # trading days
-  # Out-of-sample status from docs/hypotheses.md, maintained by hand after each test.
+  horizon: 20           # trading days, for signals without an out-of-sample entry
+  # Out-of-sample results from docs/hypotheses.md, maintained by hand after each test.
+  # The note quotes the in-sample figure at exactly these horizons, the ones tested.
   out_of_sample:
-    gap_down: not confirmed out of sample (docs/hypotheses.md H1)
-    gap_up: not confirmed out of sample (docs/hypotheses.md H2)
+    gap_down:
+      horizons: [5, 20]
+      status: not confirmed out of sample (docs/hypotheses.md H1)
+    gap_up:
+      horizons: [1]
+      status: not confirmed out of sample (docs/hypotheses.md H2)

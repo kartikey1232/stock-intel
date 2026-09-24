@@ -315,10 +315,16 @@ uv run streamlit run dashboard.py               # launch the dashboard
   2026-01-01, -33%, looks unadjusted).
 - Alerts (`processing/alerts.py`, `config/alerts.yaml`) are attention flags, never advice.
   No alert or digest text may match `FORBIDDEN_RE` (buy/sell/accumulate/target price/
-  recommend...): `build_alerts` refuses to store it, and third-party headlines that read
-  like tips (`TIP_HEADLINE_RE`) are never quoted. Every price-signal alert carries its
-  event-study note (in-sample verdict at `backtest_note.horizon`, plus the out-of-sample
-  status kept by hand in `config/alerts.yaml`; update it after each registered test).
+  recommend..., whole words; "buyback", "buy back", "buy-in", "sell-off" and past tense
+  like "sold" are allowed): `build_alerts` refuses to store it, and third-party headlines
+  that read like tips (`TIP_HEADLINE_RE`) are never quoted. Every price-signal alert
+  carries its event-study note: for signals with an out-of-sample entry in
+  `config/alerts.yaml` (update it after each registered test) the in-sample figure at
+  exactly the tested horizons (gap_up 1 day for H2, gap_down 5 and 20 for H1), else at
+  `backtest_note.horizon`. price_move alerts include Nifty's close-to-close move (and
+  its opening move for gaps), "market-wide move" when `market_wide_min_stocks` stocks
+  move the same way, and "no news data" before a stock's first news session.
+  `--rebuild` deletes a date range's unsent alerts before rebuilding; sent ones stay.
   Alerts are keyed on (symbol, alert_type, subject), so re-runs never duplicate; `sent_at`
   stays NULL until delivery exists. Results alerts only fire for the latest quarter and
   board dates within `max_age_days` (backfilled history never alerts); pending-action

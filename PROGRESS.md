@@ -16,7 +16,7 @@ Last updated: 2026-09-24 (after the first ValuePickr run; own-thread boost commi
 | 5 | Signals & backtesting | 9 rule-based price signals (no look-ahead test), Nifty 50 benchmark, event study built; no signal tuned |
 | 6 | Scheduling, digests, Telegram alerts | Scheduling, macOS failure notifications, alert engine and template digest done; delivery (Telegram) not started |
 
-- Tests: 465 passing (`uv run pytest`), ruff clean.
+- Tests: 479 passing (`uv run pytest`), ruff clean.
 - Watchlist (`config/watchlist.yaml`): RELIANCE, TCS, HDFCBANK, INFY, TMPV.
 - Git: `main`, pushed to the public repo https://github.com/kartikey1232/stock-intel
   (created 2026-09-24 after a history scan for secrets and personal data).
@@ -249,6 +249,14 @@ not in git.
   sent.
 - Found while testing: the first redaction regex started with `\b`, which never matches
   a token inside "/bot<token>/" URLs; fixed and covered by tests.
+
+### Alert fixes before going live (2026-09-24)
+- The advice filter wrongly refused "buy-back", "sell-off" and "sold" (hyphens are word
+  boundaries); now allowed. "buy" on its own, even in "buy in", is still refused.
+- The 7 alerts of 10-24 Sep were rebuilt (none had been sent). The 15 Sep gap-ups (INFY,
+  TCS, TMPV) are marked market-wide: after the 14 Sep holiday Nifty opened +0.8% and
+  closed -1.2%, and the three stocks gave back much of their gaps. Gap-up notes now quote
+  the 1-day in-sample result (worse than baseline, n=43), matching H2's horizon.
 
 ## Open items / next steps
 
