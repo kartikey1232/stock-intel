@@ -36,6 +36,7 @@ uv run python -m processing.backtest [--csv PATH]  # event study of stored signa
 uv run python -m collectors.prices --universe nifty50_ex_watchlist  # research universe prices
 uv run python -m processing.hypotheses          # registered out-of-sample test (docs/hypotheses.md)
 uv run python -m processing.alerts [--date D] [--days N] [--digest]  # build alerts; print digest
+uv run python -m delivery.telegram --find-chat | --test | --digest   # Telegram: chat id, test, send
 uv run python -m collectors.news                # news articles (Google News + publisher RSS)
 uv run python -m collectors.article_text [--reclean]  # full text for pending articles
 uv run python -m processing.stories [--full]    # group syndicated copies into stories
@@ -323,6 +324,15 @@ uv run streamlit run dashboard.py               # launch the dashboard
   board dates within `max_age_days` (backfilled history never alerts); pending-action
   alerts only for the latest day; a news shift only on its first day. run_update records
   each run in `pipeline_runs` before building the day's alerts.
+- Telegram (`delivery/telegram.py`; `delivery/` is for sending, neither collecting nor
+  processing): plain httpx Bot API. The token sits in every API URL, so it must never
+  reach a log or error: `TelegramError` messages are redacted and raised `from None`,
+  and every log handler has `RedactSecretsFilter` (`utils/logging_setup.py`). Its pattern
+  has no leading `\b` because the token follows "bot" directly in URLs. After each run,
+  unsent high-severity alerts go one per message (sent_at set per alert), then the digest
+  once; the day's other alerts are then marked sent. When Telegram delivered, the failures
+  file ends with "# telegram: delivered" and `scheduled_update.sh` skips the macOS
+  notification; if Telegram isn't configured or fails, the notification is the fallback.
 - Benchmarks (`benchmarks:` in `config/watchlist.yaml`, e.g. NIFTY50 = ^NSEI) get prices,
   the missing-bar check and indicators like stocks, but `load_watchlist()` never returns
   them: no news, social, filings, signals or dashboard entry.

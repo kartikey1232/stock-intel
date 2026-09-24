@@ -5,8 +5,9 @@
 # working directory "/". So this script uses absolute paths, cds into the project, and
 # logs everything to logs/update-YYYY-MM-DD.log (IST date).
 #
-# On a non-zero exit it shows a macOS notification naming the failed steps and the log
-# file; on success it stays silent. (Phase 6 replaces this with Telegram alerts.)
+# run_update.py sends failures to Telegram. On a non-zero exit this script shows a macOS
+# notification naming the failed steps and the log file, but only as a fallback: if the
+# failures file says Telegram delivered, it stays silent. On success it stays silent.
 # UV and LOG_DIR can be overridden, e.g. to simulate a failure with a fake uv.
 
 set -u
@@ -27,7 +28,7 @@ exec >>"$LOG_FILE" 2>&1
 # arguments, so quotes in step names need no escaping.
 notify_failure() {
     local status="$1" failed summary
-    failed="$(paste -sd ',' "$FAILURES_FILE" 2>/dev/null | sed 's/,/, /g')"
+    failed="$(grep -v '^#' "$FAILURES_FILE" 2>/dev/null | paste -sd ',' - | sed 's/,/, /g')"
     if [ -n "$failed" ]; then
         summary="Failed: $failed"
     else
@@ -44,7 +45,9 @@ notify_failure() {
 
 on_exit() {
     local status=$?
-    if [ "$status" -ne 0 ]; then
+    # run_update.py sends failures to Telegram; the notification is only a fallback for
+    # when that didn't happen (Telegram not configured, down, or the run crashed).
+    if [ "$status" -ne 0 ] && ! grep -qx '# telegram: delivered' "$FAILURES_FILE" 2>/dev/null; then
         notify_failure "$status"
     fi
     rm -f "$FAILURES_FILE"

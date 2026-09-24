@@ -1,6 +1,7 @@
 """Shared logging configuration: console output plus a rotating file in logs/."""
 
 import logging
+import re
 import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -49,6 +50,7 @@ def setup_logging(
 
     for handler in (console, file_handler):
         handler.setFormatter(formatter)
+        handler.addFilter(RedactSecretsFilter())
         setattr(handler, _HANDLER_MARKER, True)
         root.addHandler(handler)
 
@@ -56,6 +58,30 @@ def setup_logging(
     # Third-party libraries are noisy at INFO/DEBUG.
     for noisy in ("urllib3", "httpx", "httpcore", "yfinance", "peewee"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
+
+
+# Telegram bot tokens ("123456789:AA...") must never reach a log, even inside a URL or a
+# traceback.
+# No \b at the start: in API URLs the token follows "bot" directly ("/bot123456:AA...").
+SECRET_RE = re.compile(r"(?<!\d)\d{6,12}:[A-Za-z0-9_-]{30,}")
+
+
+def redact(text: str) -> str:
+    """`text` with anything that looks like a Telegram bot token replaced."""
+    return SECRET_RE.sub("<redacted-token>", text)
+
+
+class RedactSecretsFilter(logging.Filter):
+    """Redacts secrets from each record's message and traceback before it's written."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.msg, record.args = redact(record.getMessage()), None
+        if record.exc_info:
+            record.exc_text = redact(logging.Formatter().formatException(record.exc_info))
+            record.exc_info = None
+        if record.stack_info:
+            record.stack_info = redact(record.stack_info)
+        return True
 
 
 def get_logger(name: str) -> logging.Logger:

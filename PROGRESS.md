@@ -16,7 +16,7 @@ Last updated: 2026-09-24 (after the first ValuePickr run; own-thread boost commi
 | 5 | Signals & backtesting | 9 rule-based price signals (no look-ahead test), Nifty 50 benchmark, event study built; no signal tuned |
 | 6 | Scheduling, digests, Telegram alerts | Scheduling, macOS failure notifications, alert engine and template digest done; delivery (Telegram) not started |
 
-- Tests: 454 passing (`uv run pytest`), ruff clean.
+- Tests: 465 passing (`uv run pytest`), ruff clean.
 - Watchlist (`config/watchlist.yaml`): RELIANCE, TCS, HDFCBANK, INFY, TMPV.
 - Git: `main`, pushed to the public repo https://github.com/kartikey1232/stock-intel
   (created 2026-09-24 after a history scan for secrets and personal data).
@@ -242,6 +242,13 @@ not in git.
 - No results alerts: all results were backfilled (board dates up to 2026-08-12, older than
   max_age_days). No pending corporate actions exist. Pipeline status reads "no run
   recorded" until the next scheduled run, which is the first to write pipeline_runs.
+
+### Telegram (2026-09-24)
+- `delivery/telegram.py` built and tested with a mocked API. Not yet live: `.env` has no
+  TELEGRAM_BOT_TOKEN, so the chat id hasn't been looked up and no test message has been
+  sent.
+- Found while testing: the first redaction regex started with `\b`, which never matches
+  a token inside "/bot<token>/" URLs; fixed and covered by tests.
 
 ## Open items / next steps
 

@@ -56,6 +56,7 @@ def fake_steps(
     monkeypatch.setattr(run_update, "social_steps", lambda stocks: [(n, step(n)) for n in SOCIAL])
     monkeypatch.setattr(run_update, "record_pipeline_run", lambda row: None)
     monkeypatch.setattr(run_update, "run_alerts", lambda stocks: None)
+    monkeypatch.setattr(run_update, "run_delivery", lambda stocks, failed: False)
 
 
 def test_runs_prices_then_indicators_then_news_then_filings_then_social(calls) -> None:
@@ -281,3 +282,20 @@ def test_run_is_recorded_before_alerts_and_alert_failures_are_reported(
     assert run_update.run(failures_file=failures_file) == 1
     assert order == ["", "alerts", "alerts\n"]  # recorded clean, alerts ran, then re-recorded
     assert failures_file.read_text().splitlines() == ["alerts"]
+
+
+def test_telegram_delivery_marks_the_failures_file_and_its_failure_is_reported(
+    monkeypatch, calls, tmp_path
+) -> None:
+    failures_file = tmp_path / "failures.txt"
+    fake_steps(monkeypatch, calls, failing_news={"sentiment": RuntimeError("x")})
+    monkeypatch.setattr(run_update, "run_delivery", lambda stocks, failed: True)
+    assert run_update.run(failures_file=failures_file) == 1
+    assert failures_file.read_text().splitlines() == ["news: sentiment", "# telegram: delivered"]
+
+    def broken(stocks, failed):
+        raise RuntimeError("telegram down")
+
+    monkeypatch.setattr(run_update, "run_delivery", broken)
+    assert run_update.run(failures_file=failures_file) == 1
+    assert failures_file.read_text().splitlines() == ["news: sentiment", "telegram delivery"]

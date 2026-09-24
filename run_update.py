@@ -14,8 +14,11 @@ Steps:
                   NSE/BSE access is undecided (see README).
   5. social       ValuePickr posts -> stock links -> sentiment -> daily aggregates
                   (skip with --skip-social)
-Then the run and its failed steps are recorded in pipeline_runs, and the day's alerts
-are built (processing.alerts; no delivery yet). A failure there is reported too.
+Then the run and its failed steps are recorded in pipeline_runs, the day's alerts are
+built (processing.alerts), and high-severity alerts plus the digest are sent to Telegram
+(delivery.telegram). A failure in either is reported too. When Telegram delivered,
+the failures file ends with TELEGRAM_DELIVERED so the scheduled wrapper skips its macOS
+notification; otherwise that notification is the fallback.
 
 Corporate actions are synced from config/corporate_actions.yaml before indicators are
 computed; symbols whose actions changed get a full indicator recompute.
@@ -194,6 +197,19 @@ def run_alerts(stocks: list[Stock]) -> None:
     alerts.run(stocks, [day])
 
 
+TELEGRAM_DELIVERED = "# telegram: delivered"
+
+
+def run_delivery(stocks: list[Stock], failed: list[str]) -> bool:
+    """Send alerts and the digest to Telegram (lazy import). True if Telegram delivered;
+    False if it isn't configured. Raises if sending failed."""
+    from config.market_calendar import latest_completed_session, load_holidays
+    from delivery import telegram
+
+    day = latest_completed_session(dt.datetime.now(dt.UTC), load_holidays())
+    return telegram.deliver_day(day, stocks, failed) is not None
+
+
 def record_run(started_at: dt.datetime, failed: list[str]) -> None:
     """Store this run in pipeline_runs (never raises: a logging problem mustn't hide results)."""
     try:
@@ -282,9 +298,17 @@ def run(
         logger.exception("Building alerts failed")
         failed.append("alerts")
         record_run(started_at, failed)
+    delivered = False
+    try:
+        delivered = run_delivery(stocks, failed)
+    except Exception:
+        logger.exception("Telegram delivery failed")
+        failed.append("telegram delivery")
+        record_run(started_at, failed)
     elapsed = time.monotonic() - started
     if failures_file is not None:
-        failures_file.write_text("".join(f"{name}\n" for name in failed), encoding="utf-8")
+        lines = [*failed, *([TELEGRAM_DELIVERED] if delivered else [])]
+        failures_file.write_text("".join(f"{line}\n" for line in lines), encoding="utf-8")
     if failed:
         logger.error("Update finished in %.1fs with failures: %s", elapsed, ", ".join(failed))
         return 1

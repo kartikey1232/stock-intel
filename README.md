@@ -352,7 +352,7 @@ New stocks get their full 5-year history on the next update.
 | Variable | Used for | Default |
 |---|---|---|
 | `DB_PATH` | SQLite database file (relative to project root) | `data/stock_intel.db` |
-| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | Alerts (Phase 6) | — |
+| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | Telegram alerts and digest (Phase 6) | — (not sent if unset) |
 | `SOCIAL_HASH_KEY` | Keyed hash of social post authors (Phase 4) | — (required for ValuePickr) |
 | `REDDIT_CLIENT_ID`, `REDDIT_CLIENT_SECRET` | Reddit (Phase 4, awaiting approval) | — |
 | `ANTHROPIC_API_KEY` | News sentiment (Phase 2) | — |
@@ -402,6 +402,8 @@ New stocks get their full 5-year history on the next update.
 │   ├── hypotheses.py      # Registered out-of-sample test (docs/hypotheses.md)
 │   ├── alerts.py          # Daily alerts (attention flags) and the template digest
 │   └── indicators.py      # RSI, MACD, SMA, EMA, Bollinger, ATR via pandas-ta
+├── delivery/            # Send alerts and digests out (no collecting or analysis)
+│   └── telegram.py        # Telegram Bot API over httpx; token never logged
 ├── storage/
 │   ├── db.py              # SQLAlchemy schema, upserts, reads
 │   └── social.py          # Reads and writes for the social tables
@@ -552,6 +554,18 @@ uv run python -m processing.alerts --days 10 --digest  # rebuild the last 10 tra
 
 The digest is template-based: one line per stock ("quiet day" if nothing happened), the
 alerts, and the pipeline status of that day's scheduled run.
+
+**Telegram.** After each update, high-severity alerts (new results, pending corporate
+actions, pipeline failures) are sent immediately, one message each, then the digest once.
+Sent alerts get `sent_at`, so nothing is sent twice. If Telegram isn't configured or
+fails, the macOS notification still reports failed runs. Setup:
+
+1. Create a bot with @BotFather and put its token in `.env` as `TELEGRAM_BOT_TOKEN`.
+2. Send the bot any message, then run `uv run python -m delivery.telegram --find-chat`
+   and put the chat id it prints in `.env` as `TELEGRAM_CHAT_ID`.
+3. `uv run python -m delivery.telegram --test` sends a test message.
+
+The token is never written to logs or error messages.
 
 ## Roadmap
 

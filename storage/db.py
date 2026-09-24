@@ -642,6 +642,38 @@ def read_alerts(
         )
 
 
+def unsent_alerts(
+    up_to: dt.date, severity: str | None = None, engine: Engine | None = None
+) -> pd.DataFrame:
+    """Alerts dated on or before `up_to` that haven't been sent (optionally one severity)."""
+    stmt = select(ALERTS).where(ALERTS.c.sent_at.is_(None), ALERTS.c.alert_date <= up_to)
+    if severity is not None:
+        stmt = stmt.where(ALERTS.c.severity == severity)
+    stmt = stmt.order_by(ALERTS.c.alert_date, ALERTS.c.symbol, ALERTS.c.subject)
+    with (engine or get_engine()).connect() as conn:
+        return pd.DataFrame(
+            conn.execute(stmt).mappings().all(), columns=list(ALERTS.columns.keys())
+        )
+
+
+def mark_alerts_sent(
+    keys: list[tuple[str, str, str]], sent_at: dt.datetime, engine: Engine | None = None
+) -> None:
+    """Set sent_at for alerts identified by (symbol, alert_type, subject)."""
+    with (engine or get_engine()).begin() as conn:
+        for symbol, alert_type, subject in keys:
+            conn.execute(
+                update(ALERTS)
+                .where(
+                    ALERTS.c.symbol == symbol,
+                    ALERTS.c.alert_type == alert_type,
+                    ALERTS.c.subject == subject,
+                    ALERTS.c.sent_at.is_(None),
+                )
+                .values(sent_at=sent_at)
+            )
+
+
 def record_pipeline_run(row: dict[str, Any], engine: Engine | None = None) -> None:
     """Insert or replace a pipeline_runs row (keyed on started_at)."""
     engine = engine or get_engine()
