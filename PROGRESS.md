@@ -13,12 +13,13 @@ Last updated: 2026-09-24 (after the first ValuePickr run; own-thread boost commi
 | 2 | News + sentiment | Done |
 | 3 | NSE/BSE filings (quarterly results) | Done: all 80 XBRL files (8 quarters × standalone/consolidated × 5 stocks) imported by hand; flags reviewed |
 | 4 | Social media signals | ValuePickr collecting (4 dedicated topics, first run 2026-09-24); Reddit: nothing built until an API application is approved |
-| 5 | Signals & backtesting | Not started |
+| 5 | Signals & backtesting | Rule-based price signals built (9 rules, no look-ahead test); Nifty 50 benchmark stored; backtesting not started |
 | 6 | Scheduling, digests, Telegram alerts | Scheduling + macOS failure notifications done; digests and Telegram not started |
 
-- Tests: 380 passing (`uv run pytest`), ruff clean.
+- Tests: 408 passing (`uv run pytest`), ruff clean.
 - Watchlist (`config/watchlist.yaml`): RELIANCE, TCS, HDFCBANK, INFY, TMPV.
-- Git: `main`, no remote pushes made from these sessions. `PROGRESS.md` is tracked.
+- Git: `main`, pushed to the public repo https://github.com/kartikey1232/stock-intel
+  (created 2026-09-24 after a history scan for secrets and personal data).
 
 ## Data on disk (as of 2026-09-24)
 
@@ -171,6 +172,20 @@ not in git.
   each such refresh counts as an "edit" and re-links the post.
 - Social data is recent context only (uneven backfill per stock, deletions removed):
   never backtest history or cross-stock comparison (CLAUDE.md).
+
+### Signals (Phase 5)
+- 9 signals in `config/signals.yaml`. Direction choices: RSI below 30 = bullish
+  (oversold, contrarian), above 70 = bearish; volume spikes take the day's close-to-close
+  direction; 52-week breakouts have a 20-bar cooldown so a run of new highs is one signal.
+- First full run (2026-09-24, bars to 2026-09-24): 687 signals, 2021-10-11 to 2026-09-18.
+  Per signal (HDFCBANK/INFY/RELIANCE/TCS/TMPV): golden 3/4/3/2/3, death 3/4/4/2/3, RSI<30
+  18/30/19/22/19, RSI>70 20/9/20/18/29, volume spike 53/67/54/65/64, 52w high 5/4/5/6/9,
+  52w low 3/4/4/8/4, gap up 7/9/6/5/21, gap down 10/16/2/6/15.
+- TMPV's golden cross (2025-10-29) and death cross (2025-11-19) after the demerger are a
+  genuine whipsaw with SMA spreads of +0.02%/-0.03%; the demerger itself produces no gap
+  signal (adjusted prices). A minimum-spread parameter would suppress such whipsaws.
+- The look-ahead test was checked by injecting a one-bar leak into the volume average:
+  the bar-by-bar replay test fails; the simpler "append future bars" test alone did not.
 
 ## Open items / next steps
 

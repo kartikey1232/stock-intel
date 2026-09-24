@@ -28,8 +28,8 @@ cp .env.example .env
 
 One command updates everything for every stock in the watchlist, in five stages:
 
-1. prices;
-2. indicators;
+1. prices (the watchlist plus the Nifty 50 benchmark);
+2. indicators, then rule-based price signals;
 3. the news pipeline (collect articles, extract text, group stories, link articles to
    stocks, score sentiment, build daily aggregates);
 4. the filings pipeline (HDFC Bank results PDFs from its IR site, import the results
@@ -66,6 +66,7 @@ Each step can also run on its own:
 uv run python -m collectors.prices           # prices only
 uv run python -m processing.indicators       # indicators only (incremental)
 uv run python -m processing.indicators --full   # recompute all indicator history
+uv run python -m processing.signals --report    # rebuild price signals; counts per stock
 uv run python run_update.py --full-indicators   # both, with a full indicator recompute
 ```
 
@@ -158,6 +159,9 @@ Opens at <http://localhost:8501>. Pick a stock and date range in the sidebar. Th
 - **Candles toggle:** adjusted (default) or raw. When a corporate action falls in the
   visible range, it is marked on the chart and explained below it.
 - **Price chart:** candlesticks with SMA 50/200 and Bollinger Bands, plus volume.
+- **Signals on chart** (sidebar): a checkbox per rule-based signal. Bullish markers sit
+  below the candle, bearish ones above; hover for the value. Defaults come from
+  `default_on` in `config/signals.yaml`.
 - **RSI** (with 30/70 levels) and **MACD** (with histogram) panels.
 - **News sentiment panel:** daily story-weighted sentiment (line, −1 to +1) and story
   count (bars) per trading session, on the same date axis as the price chart.
@@ -353,7 +357,9 @@ New stocks get their full 5-year history on the next update.
 ├── run_update.py          # Entry point: collect prices → compute indicators
 ├── dashboard.py           # Streamlit + Plotly dashboard
 ├── config/
-│   ├── watchlist.yaml     # Stocks to track
+│   ├── watchlist.yaml     # Stocks to track, plus benchmark indices (Nifty 50)
+│   ├── signals.yaml       # Rule-based price signal definitions and parameters
+│   ├── signals.py         # Loads and validates signal definitions
 │   ├── loader.py          # Loads and validates the watchlist
 │   ├── corporate_actions.yaml  # Splits/bonuses/demergers (reviewed in git)
 │   ├── corporate_actions.py    # Loads and validates corporate actions
@@ -378,6 +384,7 @@ New stocks get their full 5-year history on the next update.
 │   ├── social.py          # Links social posts to stocks, scores them, social_daily
 │   ├── filing_categories.py  # Filing types + announced corporate actions
 │   ├── results.py         # XBRL/PDF results extraction, QoQ/YoY, validation
+│   ├── signals.py         # Rule-based price signals (no look-ahead)
 │   └── indicators.py      # RSI, MACD, SMA, EMA, Bollinger, ATR via pandas-ta
 ├── storage/
 │   ├── db.py              # SQLAlchemy schema, upserts, reads
@@ -398,6 +405,8 @@ New stocks get their full 5-year history on the next update.
 - `indicators` (`symbol, date`): rsi_14, macd, macd_signal, macd_hist, sma_20, sma_50,
   sma_200, ema_20, bb_upper, bb_middle, bb_lower, atr_14, volume_sma_20. Computed from
   adjusted prices.
+- `signals` (`symbol, date, signal`): direction (bullish/bearish/neutral), value
+  (scale-free: %, a volume multiple or an RSI level), computed_at.
 - `corporate_actions` (`symbol, ex_date`): action_type, price_factor, source, note.
   A mirror of `config/corporate_actions.yaml`.
 - `articles` (`id` = hash of the cleaned-up URL): url, source, title, summary,
@@ -477,11 +486,25 @@ uv run ruff format .       # format
 - **Yahoo Finance** is an unofficial data source. Holiday filler bars (zero volume, flat
   price) are filtered out, but occasional gaps or revisions are possible.
 
+## Price signals (Phase 5)
+
+`config/signals.yaml` defines each signal and all its parameters: golden/death cross
+(SMA 50/200), RSI crossing below 30 / above 70, volume above 2x its 20-day average, 52-week
+high/low breakouts, and gaps over 3%. `processing/signals.py` evaluates them on
+corporate-action adjusted daily bars and stores them in `signals` (symbol, date, signal,
+direction, value), rebuilt from full history on each update.
+
+A signal on a given day uses only data available at that day's close. A test replays
+the price history one bar at a time and fails if any day's signals would change once
+later bars arrive, including a later split. Signals are for the watchlist only; the
+Nifty 50 (`^NSEI`, under `benchmarks:` in `config/watchlist.yaml`) is stored as a
+benchmark price series with indicators, not shown as a stock.
+
 ## Roadmap
 
 1. ✅ Prices + technical indicators
 2. ✅ News + sentiment
 3. NSE/BSE filings (quarterly results)
 4. Social media signals (ValuePickr done; Reddit awaiting API approval)
-5. Signals & backtesting
+5. Signals & backtesting (rule-based price signals done; backtesting next)
 6. Scheduling, daily digests, Telegram alerts
