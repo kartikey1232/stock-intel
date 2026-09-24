@@ -13,10 +13,10 @@ Last updated: 2026-09-24 (after the first ValuePickr run; own-thread boost commi
 | 2 | News + sentiment | Done |
 | 3 | NSE/BSE filings (quarterly results) | Done: all 80 XBRL files (8 quarters × standalone/consolidated × 5 stocks) imported by hand; flags reviewed |
 | 4 | Social media signals | ValuePickr collecting (4 dedicated topics, first run 2026-09-24); Reddit: nothing built until an API application is approved |
-| 5 | Signals & backtesting | Rule-based price signals built (9 rules, no look-ahead test); Nifty 50 benchmark stored; backtesting not started |
+| 5 | Signals & backtesting | 9 rule-based price signals (no look-ahead test), Nifty 50 benchmark, event study built; no signal tuned |
 | 6 | Scheduling, digests, Telegram alerts | Scheduling + macOS failure notifications done; digests and Telegram not started |
 
-- Tests: 408 passing (`uv run pytest`), ruff clean.
+- Tests: 417 passing (`uv run pytest`), ruff clean.
 - Watchlist (`config/watchlist.yaml`): RELIANCE, TCS, HDFCBANK, INFY, TMPV.
 - Git: `main`, pushed to the public repo https://github.com/kartikey1232/stock-intel
   (created 2026-09-24 after a history scan for secrets and personal data).
@@ -186,6 +186,21 @@ not in git.
   signal (adjusted prices). A minimum-spread parameter would suppress such whipsaws.
 - The look-ahead test was checked by injecting a one-bar leak into the volume average:
   the bar-by-bar replay test fails; the simpler "append future bars" test alone did not.
+
+### Event study (2026-09-24, untuned signals, data to 2026-09-24)
+- Setup: entry at next open, 1/5/20/60-day horizons, excess vs Nifty 50, edge vs the same
+  stock's all-days excess, cluster gap 10 bars, 10,000 bootstrap samples (seed 20260924).
+- Only volume spikes (n~175), RSI<30 (~63), RSI>70 (~59), gap up (~40) and gap down
+  (~40) have n >= 30. Golden/death crosses (15/16) and 52-week breakouts (29/23) are too
+  few to judge.
+- Of 36 results, 3 have a CI excluding 0 (about 1.8 expected by chance): gap_down edge
+  +1.47% at 5 days and +1.63% at 20 days (the stock kept underperforming after a gap
+  down; the two horizons overlap, so not independent evidence), and gap_up -0.60% at 1
+  day (gap-ups underperformed the next day). Everything else: no clear difference.
+- The five stocks' baseline excess vs Nifty is mostly negative over the period, so raw
+  mean excess after signals is negative for most signals; read the edge column.
+- Not acted on: no signal parameters were changed. Treat the gap results as hypotheses
+  to recheck on new data, not findings.
 
 ## Open items / next steps
 

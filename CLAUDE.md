@@ -32,6 +32,7 @@ uv run python run_update.py [--skip-news] [--skip-filings] [--skip-social] [--fa
 uv run python -m collectors.prices              # prices only
 uv run python -m processing.indicators [--full] # indicators only (watchlist + benchmarks)
 uv run python -m processing.signals [--report]  # rebuild rule-based price signals; counts
+uv run python -m processing.backtest [--csv PATH]  # event study of stored signals vs Nifty 50
 uv run python -m collectors.news                # news articles (Google News + publisher RSS)
 uv run python -m collectors.article_text [--reclean]  # full text for pending articles
 uv run python -m processing.stories [--full]    # group syndicated copies into stories
@@ -274,6 +275,14 @@ uv run streamlit run dashboard.py               # launch the dashboard
   later corporate action rescales all earlier bars; then a later action can't change a
   past signal. `tests/test_signals.py` replays history bar by bar and fails if any day's
   signals differ from the full-history ones; keep it passing for every new rule.
+- Event study (`processing/backtest.py`, settings in `config/backtest.yaml`): entry at
+  the next open after a signal (a signal is only known at the close), h-day return =
+  open(t+1) -> close(t+h), excess = minus Nifty 50 over the identical window. edge =
+  direction x (event excess - the same stock's all-days excess), so bearish signals
+  "work" when the stock underperforms. Same-signal/same-stock events within
+  `cluster_gap` (10) bars chain into one. n < 30 = "too few events to judge". The
+  report must keep stating its limits (survivorship, multiple testing, no costs,
+  dependent events). Don't tune signal parameters on these results: it overfits.
 - Benchmarks (`benchmarks:` in `config/watchlist.yaml`, e.g. NIFTY50 = ^NSEI) get prices,
   the missing-bar check and indicators like stocks, but `load_watchlist()` never returns
   them: no news, social, filings, signals or dashboard entry.

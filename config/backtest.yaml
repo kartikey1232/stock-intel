@@ -1,0 +1,13 @@
+# Event study for processing/backtest.py (Phase 5). Signal definitions stay in
+# config/signals.yaml; these settings only control how their outcomes are measured.
+
+horizons: [1, 5, 20, 60]   # trading days after the signal
+# A signal is known at the close of its day, so a trade can start at the next open:
+# the h-day return runs from open(t+1) to close(t+h), and Nifty over the same window.
+benchmark: NIFTY50
+# Events of the same signal and stock within this many trading days of the previous one
+# are one cluster; only the first counts (RSI < 30 on consecutive days is one event).
+cluster_gap: 10
+min_events: 30            # fewer events than this: "too few events to judge"
+bootstrap_samples: 10000
+seed: 20260924            # fixed so the confidence intervals are reproducible

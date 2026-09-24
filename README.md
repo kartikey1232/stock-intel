@@ -360,6 +360,8 @@ New stocks get their full 5-year history on the next update.
 │   ├── watchlist.yaml     # Stocks to track, plus benchmark indices (Nifty 50)
 │   ├── signals.yaml       # Rule-based price signal definitions and parameters
 │   ├── signals.py         # Loads and validates signal definitions
+│   ├── backtest.yaml      # Event-study horizons, clustering, bootstrap settings
+│   ├── backtest.py        # Loads and validates event-study settings
 │   ├── loader.py          # Loads and validates the watchlist
 │   ├── corporate_actions.yaml  # Splits/bonuses/demergers (reviewed in git)
 │   ├── corporate_actions.py    # Loads and validates corporate actions
@@ -385,6 +387,7 @@ New stocks get their full 5-year history on the next update.
 │   ├── filing_categories.py  # Filing types + announced corporate actions
 │   ├── results.py         # XBRL/PDF results extraction, QoQ/YoY, validation
 │   ├── signals.py         # Rule-based price signals (no look-ahead)
+│   ├── backtest.py        # Event study of signals vs Nifty 50 and a do-nothing baseline
 │   └── indicators.py      # RSI, MACD, SMA, EMA, Bollinger, ATR via pandas-ta
 ├── storage/
 │   ├── db.py              # SQLAlchemy schema, upserts, reads
@@ -494,6 +497,14 @@ high/low breakouts, and gaps over 3%. `processing/signals.py` evaluates them on
 corporate-action adjusted daily bars and stores them in `signals` (symbol, date, signal,
 direction, value), rebuilt from full history on each update.
 
+**Event study.** `uv run python -m processing.backtest` measures what followed each
+signal at 1, 5, 20 and 60 trading days: the return from the next day's open, the excess
+over Nifty 50 for the same window, and the "edge" over the same stock's excess return
+from all days (doing nothing). Consecutive firings count once. It reports n, mean and
+median excess, hit rate, and a bootstrap 95% CI per signal, marks n < 30 as too few
+events, and states its limits: 5 hand-picked large caps (survivorship bias), 36 results
+tested at once, no transaction costs.
+
 A signal on a given day uses only data available at that day's close. A test replays
 the price history one bar at a time and fails if any day's signals would change once
 later bars arrive, including a later split. Signals are for the watchlist only; the
@@ -506,5 +517,5 @@ benchmark price series with indicators, not shown as a stock.
 2. ✅ News + sentiment
 3. NSE/BSE filings (quarterly results)
 4. Social media signals (ValuePickr done; Reddit awaiting API approval)
-5. Signals & backtesting (rule-based price signals done; backtesting next)
+5. Signals & backtesting (price signals and an event study done)
 6. Scheduling, daily digests, Telegram alerts
