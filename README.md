@@ -279,9 +279,12 @@ context for one stock, not as backtest history or a cross-stock comparison.
 The dashboard's **Social** tab shows post and author counts, sentiment and links to the
 posts, never the post text.
 
-**Reddit** needs an app approved under Reddit's Responsible Builder Policy before any
-access. If approved, Reddit data may feed dashboards and rule-based signals but never a
-trained model, removed posts are deleted within 48 hours, and stored text after 30 days.
+**Reddit**: nothing is built, and nothing will be until Reddit approves an API
+application. Reddit data will come only from the official API, never from scraping,
+Pushshift or third-party datasets. A future collector will delete post text as soon as
+it's scored (within 48 hours), keep only post ID, timestamp, stock link and score, store
+no author information at all, remove the scores of deleted posts and recompute
+aggregates, and never feed fitted models or research (see CLAUDE.md principle 9).
 
 ## Data use
 

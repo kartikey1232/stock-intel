@@ -12,7 +12,7 @@ Last updated: 2026-09-24 (after the first ValuePickr run; own-thread boost commi
 | 1 | Prices + technical indicators | Done |
 | 2 | News + sentiment | Done |
 | 3 | NSE/BSE filings (quarterly results) | Done: all 80 XBRL files (8 quarters × standalone/consolidated × 5 stocks) imported by hand; flags reviewed |
-| 4 | Social media signals | ValuePickr collecting (4 dedicated topics, first run 2026-09-24); Reddit awaits API approval |
+| 4 | Social media signals | ValuePickr collecting (4 dedicated topics, first run 2026-09-24); Reddit: nothing built until an API application is approved |
 | 5 | Signals & backtesting | Not started |
 | 6 | Scheduling, digests, Telegram alerts | Scheduling + macOS failure notifications done; digests and Telegram not started |
 
@@ -136,9 +136,15 @@ not in git.
   - X: pay-per-use only (~$0.005/read), skip. StockTwits: API closed. YouTube: 10k
     units/day, 30-day storage rule, later maybe. Telegram: bans AI/ML use of data, defer.
 - Decisions (approved by the user): dedicated topics link at 0.9 without the linker;
-  TMPV topic 1233 defaults only before 2025-10-14; ValuePickr text kept (the 30-day text
-  deletion is for Reddit only); deletion sync applies to both; authors stored only as a
-  keyed HMAC; dashboard shows no post text.
+  TMPV topic 1233 defaults only before 2025-10-14; ValuePickr text kept; ValuePickr
+  authors stored only as a keyed HMAC; dashboard shows no post text.
+- **Reddit decision (user, 2026-09-24; CLAUDE.md principle 9).** Build nothing until Reddit
+  approves an API application. Official API only: no scraping, Pushshift or third-party
+  datasets. When built: post text deleted as soon as it's scored (max 48 h); only post ID,
+  timestamp, stock link and score kept, for deletion tracing; no author information at
+  all (not even a hash); a deletion sync removes scores of deleted posts and recomputes
+  aggregates; never used in fitted models or research (research needs Reddit's RFR
+  programme). This replaces the earlier plan to keep Reddit text for 30 days.
 - Topic IDs came from search results and were confirmed by the user in a browser on
   2026-09-24: HDFCBANK 24141, RELIANCE 32873, INFY 8124, TMPV 1233 (all active).
   "Market news and updates" (133414) was dropped: no posts since February 2024. General
@@ -180,8 +186,8 @@ not in git.
 5. Optional: show provisions (and NII/NPA for banks) on the dashboard; they're already
    extracted.
 6. Phase 4: check the next ValuePickr run's log for the skipped-post reasons and the
-   /latest.json line. Apply for Reddit API access if
-   wanted (see README). Phase 5 backtests must filter news and social posts on
+   /latest.json line. Reddit: only the user can apply for API access; nothing is built
+   until it's approved (CLAUDE.md principle 9). Phase 5 backtests must filter news and social posts on
    `first_seen_at` and results on `filed_at`, and treat social data as
    survivorship-biased (deleted posts are purged).
 

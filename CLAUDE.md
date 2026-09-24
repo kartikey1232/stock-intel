@@ -296,11 +296,19 @@ uv run streamlit run dashboard.py               # launch the dashboard
    becomes a product, get ValuePickr's permission first. Never store usernames, display
    names, avatars or profile links (authors only as a keyed HMAC), never display or share
    post text, and delete posts that are deleted or hidden upstream.
-9. **Reddit data is never used in fitted models.** No Reddit access until Reddit approves
-   an app under its Responsible Builder Policy. Once approved: Reddit content and anything
-   derived from it may feed rule-based signals and dashboards, but never a trained or
-   fitted model (Developer Terms §4.2); delete posts removed on Reddit promptly (target
-   48 h) with their derived rows, and delete stored Reddit text after 30 days.
+9. **Reddit: nothing until Reddit approves an API application; build nothing for it
+   now.** Reddit data comes only from the official Data API under an approved app: no
+   scraping (any method, including the Chrome extension or a headless browser), no
+   Pushshift, no third-party Reddit datasets or APIs. When a Reddit collector is built,
+   it must:
+   - delete post text as soon as the post is scored, and never keep it longer than 48 h;
+   - keep only post ID, timestamp, stock link and score (enough to trace deletions);
+   - store no author information at all: no username, no user ID, no hash of either;
+   - run a deletion sync that removes the scores of posts deleted or removed on Reddit
+     and recomputes the affected aggregates;
+   - never use Reddit data, or anything derived from it, in fitted or trained models, or
+     for research (research needs Reddit's Research Data Access (RFR) programme).
+   Reddit-derived scores may feed dashboards and rule-based signals only.
 
 ## Code style
 
