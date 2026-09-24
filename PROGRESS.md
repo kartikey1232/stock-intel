@@ -14,7 +14,7 @@ Last updated: 2026-09-24 (after the first ValuePickr run; own-thread boost commi
 | 3 | NSE/BSE filings (quarterly results) | Done: all 80 XBRL files (8 quarters × standalone/consolidated × 5 stocks) imported by hand; flags reviewed |
 | 4 | Social media signals | ValuePickr collecting (4 dedicated topics, first run 2026-09-24); Reddit: nothing built until an API application is approved |
 | 5 | Signals & backtesting | 9 rule-based price signals (no look-ahead test), Nifty 50 benchmark, event study built; no signal tuned |
-| 6 | Scheduling, digests, Telegram alerts | Scheduling, macOS failure notifications, alert engine and template digest done; delivery (Telegram) not started |
+| 6 | Scheduling, digests, Telegram alerts | Scheduling, alert engine, template digest and Telegram delivery done (live 2026-09-24); macOS notification is the fallback |
 
 - Tests: 479 passing (`uv run pytest`), ruff clean.
 - Watchlist (`config/watchlist.yaml`): RELIANCE, TCS, HDFCBANK, INFY, TMPV.
@@ -244,9 +244,15 @@ not in git.
   recorded" until the next scheduled run, which is the first to write pipeline_runs.
 
 ### Telegram (2026-09-24)
-- `delivery/telegram.py` built and tested with a mocked API. Not yet live: `.env` has no
-  TELEGRAM_BOT_TOKEN, so the chat id hasn't been looked up and no test message has been
-  sent.
+- `delivery/telegram.py` is live since 2026-09-24 20:16 IST: bot @Kartikey_stockintel_bot,
+  chat 1101031608 (the user's account, display name "Aaryan"), test message delivered.
+  The first token was revoked and replaced before going live, because the user's "/start"
+  and "Hi" (19:56) never showed up in getUpdates, and something outside this project may
+  have read them with that token. A later "test" never reached the bot either; it was
+  probably sent in another chat. Nothing on this Mac polls Telegram, and our code never
+  passes offset or allowed_updates. No token-shaped strings appear in logs/.
+- From the next scheduled run, high alerts and the digest go to Telegram; the macOS
+  notification only appears if Telegram fails.
 - Found while testing: the first redaction regex started with `\b`, which never matches
   a token inside "/bot<token>/" URLs; fixed and covered by tests.
 
