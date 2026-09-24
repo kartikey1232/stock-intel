@@ -292,10 +292,14 @@ aggregates, and never feed fitted models or research (see CLAUDE.md principle 9)
 
 ## Data use
 
+**This repository contains code only.** No collected data is published here: no prices
+database, news article text, forum posts, exchange filings or results files. Those
+stay on the machine that collects them (`data/` and `.env` are git-ignored), in line with
+the sources' terms.
+
 Article text and forum posts are fetched and stored **locally, for personal analysis
-only**. It belongs
-to the publishers: don't republish it, share the database, or expose the text through a
-public service. Collection respects robots.txt and rate limits, and paywalled articles
+only**. They belong to their publishers and authors: don't republish them, share the
+database, or expose the text through a public service. Collection respects robots.txt and rate limits, and paywalled articles
 are never extracted.
 
 ## Configuration
