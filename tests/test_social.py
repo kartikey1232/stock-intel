@@ -33,10 +33,10 @@ CONFIG = ValuePickrConfig(
     topics=[
         Topic(24141, "HDFC Bank thread", "HDFCBANK"),
         Topic(1233, "Tata Motors thread", "TMPV", dt.date(2025, 10, 14)),
-        Topic(133414, "Market news and updates"),
     ],
 )
 IST = dt.timezone(dt.timedelta(hours=5, minutes=30))
+DISCOVERED = 555  # an unconfigured topic, as found via /latest.json
 
 
 class FakeScorer:
@@ -90,15 +90,12 @@ def test_tata_motors_thread_defaults_to_tmpv_only_before_the_demerger() -> None:
     assert weak["TMPV"]["confidence"] == pytest.approx(0.45)
 
 
-def test_general_topic_posts_go_through_the_entity_linker() -> None:
+def test_discovered_topic_posts_go_through_the_entity_linker() -> None:
     found = links(
-        133414, "Infosys wins a large deal. Infosys guidance raised.", dt.date(2026, 9, 1)
+        DISCOVERED, "Infosys wins a large deal. Infosys guidance raised.", dt.date(2026, 9, 1)
     )
     assert set(found) == {"INFY"} and found["INFY"]["method"] == "linker"
-    assert links(133414, "Markets were flat today.", dt.date(2026, 9, 1)) == {}
-    assert links(999, "Infosys wins a large deal.", dt.date(2026, 9, 1))["INFY"]["method"] == (
-        "linker"  # discovered (unconfigured) topics too
-    )
+    assert links(DISCOVERED, "Markets were flat today.", dt.date(2026, 9, 1)) == {}
 
 
 # --- scoring input -----------------------------------------------------------------
@@ -150,8 +147,8 @@ def test_link_score_and_aggregate(engine: Engine) -> None:
     add_post(2, 24141, "Asset quality worries me.", monday + dt.timedelta(hours=1), "a")
     add_post(3, 24141, "A strong quarter overall.", monday + dt.timedelta(hours=2), "b")
     add_post(4, 24141, "Late post: strong numbers.", dt.datetime(2026, 9, 21, 17, tzinfo=IST), "c")
-    add_post(5, 133414, "Infosys looks strong here.", monday, "d")
-    add_post(6, 133414, "Nothing about our stocks.", monday, "e")
+    add_post(5, DISCOVERED, "Infosys looks strong here.", monday, "d")
+    add_post(6, DISCOVERED, "Nothing about our stocks.", monday, "e")
 
     assert social.link(STOCKS, CONFIG) == 6
     assert social.link(STOCKS, CONFIG) == 0  # already linked
@@ -197,7 +194,8 @@ def test_dashboard_items_have_links_and_scores_but_no_text(engine: Engine) -> No
 def test_project_social_config_is_valid_and_maps_topics() -> None:
     cfg = load_social_sources(DEFAULT_SOCIAL_SOURCES_PATH)
     symbols = {t.id: t.symbol for t in cfg.topics}
-    assert symbols[1233] == "TMPV" and symbols[133414] is None
+    assert symbols == {24141: "HDFCBANK", 32873: "RELIANCE", 8124: "INFY", 1233: "TMPV"}
+    assert cfg.confirmed
     assert cfg.topic(1233).default_until == dt.date(2025, 10, 14)
     assert cfg.min_interval_s >= 5
     assert all(t.symbol in BY_SYMBOL for t in cfg.topics if t.symbol)

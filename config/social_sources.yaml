@@ -20,14 +20,16 @@ valuepickr:
   latest_max_topics: 5      # /latest.json topics fetched per run (titles naming a stock)
 
   # Set to true once the topic IDs below have been confirmed against the live forum.
-  # Until then the collector makes no requests.
-  confirmed: false
+  # Until then the collector makes no requests. Confirmed in a browser on 2026-09-24.
+  confirmed: true
 
   # Dedicated topics: every post links to `symbol` with confidence 0.9. With
   # `default_until`, only posts created before that date default to the symbol; later
   # posts go through the entity linker (TMPV: from the demerger ex-date, bare "Tata
   # Motors" means the CV company unless there's passenger-vehicle context).
-  # General topics (no symbol) always go through the entity linker.
+  # General topics (no symbol) would go through the entity linker; none are configured.
+  # General discussion comes only from /latest.json topics whose title names a stock.
+  # ("Market news and updates", 133414, was dropped: no posts since February 2024.)
   topics:
     - id: 24141
       title: "HDFC Bank - we understand your world"
@@ -42,5 +44,3 @@ valuepickr:
       title: "Tata Motors - On the way to world Automobile leader?"
       symbol: TMPV
       default_until: 2025-10-14
-    - id: 133414
-      title: "Market news and updates"

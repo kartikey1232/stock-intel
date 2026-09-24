@@ -247,11 +247,13 @@ use only**. `config/social_sources.yaml` lists the topics to follow:
 - **Dedicated topics** (HDFC Bank, RIL, Infosys, Tata Motors): every post is about that
   stock. The Tata Motors thread counts as TMPV only for posts before the demerger
   (14 Oct 2025); later posts go through the entity linker.
-- **General topics** ("Market news and updates") and topics found in `/latest.json`
-  whose title names a watchlist stock: posts are linked by the entity linker.
+- **General discussion** comes only from recent topics in `/latest.json` whose title
+  names a watchlist stock; their posts are linked by the entity linker. ("Market news
+  and updates" was left out: no posts since February 2024.)
 
-Before the first run, check the topic IDs against the forum, set `confirmed: true`, and
-add a hash key to `.env`:
+The topic IDs were confirmed in a browser on 2026-09-24 (`confirmed: true`). Changing
+them later: check each one on the forum first. The collector also needs a hash key in
+`.env`:
 
 ```bash
 python -c "import secrets; print(secrets.token_hex(32))"   # put this in SOCIAL_HASH_KEY
