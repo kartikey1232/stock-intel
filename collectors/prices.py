@@ -214,7 +214,7 @@ def missing_session_bars(
 ) -> dict[str, str]:
     """Stocks without a stored bar for the latest completed trading session.
 
-    Returns {symbol: reason}. Before 15:30 IST the session checked is the previous
+    Returns {symbol: reason}. Before 16:00 IST the session checked is the previous
     trading day, so this can run at any time.
     """
     now = now or dt.datetime.now(IST)

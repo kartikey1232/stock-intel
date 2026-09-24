@@ -19,6 +19,7 @@ from processing.adjustments import adjust_prices
 from processing.entities import LINK_THRESHOLD
 from processing.results import changes, joined_notes
 from processing.sentiment import TradingCalendar, news_time, session_for
+from processing.signals import display_signals
 from storage.db import (
     project_path,
     read_corporate_actions,
@@ -1056,7 +1057,12 @@ def main() -> None:
             visible_actions,
             news_view,
             markers,
-            signal_markers(cached_signals(stock.symbol), view, rules, selected_signals),
+            signal_markers(
+                display_signals(cached_signals(stock.symbol), adjusted, rules),
+                view,
+                rules,
+                selected_signals,
+            ),
         ),
         width="stretch",
     )

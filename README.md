@@ -127,7 +127,7 @@ uv run python -m processing.sentiment --report   # FinBERT sentiment + daily per
 ## Daily schedule (macOS)
 
 A launchd job runs `run_update.py` every weekday at 16:15 IST, after the market closes at
-15:30:
+15:30 and after 16:00, when a day's bar counts as final:
 
 ```bash
 scripts/install_schedule.sh            # install / reinstall

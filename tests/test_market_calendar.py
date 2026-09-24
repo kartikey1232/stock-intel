@@ -34,8 +34,10 @@ def test_malformed_holidays_file_raises(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("now", "expected"),
     [
-        (at("2026-09-23", "16:15"), "2026-09-23"),  # after close: today
-        (at("2026-09-23", "15:30"), "2026-09-23"),  # the close itself counts
+        (at("2026-09-23", "16:15"), "2026-09-23"),  # after the final bar: today
+        (at("2026-09-23", "16:00"), "2026-09-23"),  # 16:00 itself counts
+        (at("2026-09-23", "15:45"), "2026-09-22"),  # closed, but Yahoo's bar may be late
+        (at("2026-09-23", "15:30"), "2026-09-22"),  # the close alone isn't enough
         (at("2026-09-23", "10:00"), "2026-09-22"),  # before close: yesterday
         (at("2026-09-19", "12:00"), "2026-09-18"),  # Saturday: Friday
         (at("2026-09-14", "17:00"), "2026-09-11"),  # holiday Monday: previous Friday

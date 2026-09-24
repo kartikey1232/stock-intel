@@ -18,6 +18,9 @@ _PARAMS: dict[str, dict[str, tuple[str, ...] | None]] = {
     "gap": {"threshold_pct": None, "side": ("up", "down")},
 }
 _COMMON = {"type", "direction", "label", "default_on", "cooldown"}
+# Optional per-type parameters with defaults. min_gap_pct only affects display and alerts
+# (see processing.signals.display_signals), never the stored signals or the backtest.
+_OPTIONAL = {"ma_cross": {"min_gap_pct": 0.0}}
 
 
 class SignalConfigError(ValueError):
@@ -65,7 +68,8 @@ def _parse(name: str, entry: Any, path: Path) -> SignalRule:
     if kind not in _PARAMS:
         raise SignalConfigError(f"{where}: type must be one of {sorted(_PARAMS)}")
     spec = _PARAMS[kind]
-    unknown = sorted(set(entry) - _COMMON - set(spec))
+    optional = _OPTIONAL.get(kind, {})
+    unknown = sorted(set(entry) - _COMMON - set(spec) - set(optional))
     if unknown:
         raise SignalConfigError(f"{where}: unknown field(s) for {kind}: {', '.join(unknown)}")
     params = {}
@@ -77,6 +81,11 @@ def _parse(name: str, entry: Any, path: Path) -> SignalRule:
         elif value not in choices:
             raise SignalConfigError(f"{where}: {param} must be one of {choices}")
         params[param] = value
+    for param, default in optional.items():
+        value = entry.get(param, default)
+        if isinstance(value, bool) or not isinstance(value, int | float) or value < 0:
+            raise SignalConfigError(f"{where}: {param} must be a number >= 0")
+        params[param] = float(value)
     if kind == "ma_cross" and params["fast"] >= params["slow"]:
         raise SignalConfigError(f"{where}: fast must be shorter than slow")
     if kind == "rsi_cross" and not 0 < params["level"] < 100:

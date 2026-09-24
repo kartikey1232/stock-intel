@@ -11,6 +11,11 @@
 #   label:       shown on the dashboard
 #   default_on:  whether the dashboard shows its markers without being ticked
 #   cooldown:    bars after a signal during which the same signal isn't repeated (default 0)
+#   min_gap_pct: ma_cross only, optional (default 0). Display and alerts show a cross only
+#                once the averages are this many % apart in the new direction (before
+#                crossing back), on that confirmation day. Hides whipsaws where the
+#                averages stay nearly equal (TMPV Oct-Nov 2025). The stored signals and
+#                the backtest always use the raw cross.
 #
 # value per type: ma_cross = fast/slow SMA spread in %; rsi_cross = RSI; volume_spike =
 # volume as a multiple of its average; range_breakout = % beyond the prior extreme;
@@ -22,6 +27,7 @@ signals:
     fast: 50
     slow: 200
     cross: above
+    min_gap_pct: 0
     direction: bullish
     label: Golden cross (SMA 50 > 200)
     default_on: true
@@ -30,6 +36,7 @@ signals:
     fast: 50
     slow: 200
     cross: below
+    min_gap_pct: 0
     direction: bearish
     label: Death cross (SMA 50 < 200)
     default_on: true

@@ -7,7 +7,7 @@ the `signals` table (symbol, date, signal, direction, value).
 No look-ahead. A signal on day t uses only bars up to and including t's close:
 - every rolling window, previous-bar comparison and cooldown looks backwards only, and
   the volume average excludes the signal day itself;
-- bars after the latest completed NSE session (e.g. today's before 15:30 IST, which Yahoo
+- bars after the latest completed NSE session (e.g. today's before 16:00 IST, which Yahoo
   still revises) are dropped before evaluation;
 - prices are corporate-action adjusted, and an adjustment for an action after t rescales
   every bar up to t by the same factor. All rules are ratios or comparisons and every
@@ -155,6 +155,54 @@ def compute_signals(prices: pd.DataFrame, rules: list[SignalRule]) -> pd.DataFra
     if not frames:
         return pd.DataFrame(columns=SIGNAL_COLUMNS)
     out = pd.concat(frames, ignore_index=True)
+    return out.sort_values(["date", "signal"]).reset_index(drop=True)
+
+
+# --- display and alerts ------------------------------------------------------------
+
+
+def confirmed_crosses(prices: pd.DataFrame, rule: SignalRule) -> pd.DataFrame:
+    """ma_cross events dated when the averages first stand `min_gap_pct` apart in the
+    cross's direction, without having crossed back first (SIGNAL_COLUMNS).
+
+    Known at that day's close, so it's safe for alerts. With min_gap_pct 0 it equals the
+    raw cross.
+    """
+    df = prices.sort_values("date").reset_index(drop=True)
+    p = rule.params
+    fast = df["close"].rolling(p["fast"], min_periods=p["fast"]).mean()
+    slow = df["close"].rolling(p["slow"], min_periods=p["slow"]).mean()
+    spread = (fast / slow - 1).to_numpy()
+    side = 1 if p["cross"] == "above" else -1
+    crossed = _crossed(pd.Series(spread), 0.0, p["cross"]).to_numpy()
+    gap = p.get("min_gap_pct", 0.0) / 100
+    rows, armed = [], False
+    for i, value in enumerate(spread):
+        if np.isnan(value):
+            continue
+        if crossed[i]:
+            armed = True
+        elif side * value <= 0:
+            armed = False  # crossed back before confirming
+        if armed and side * value >= gap:
+            rows.append((df.at[i, "date"], rule.name, rule.direction, value * 100))
+            armed = False
+    return pd.DataFrame(rows, columns=SIGNAL_COLUMNS)
+
+
+def display_signals(
+    signals: pd.DataFrame, prices: pd.DataFrame, rules: list[SignalRule]
+) -> pd.DataFrame:
+    """Signals for the dashboard (and future alerts): stored signals, except that ma_cross
+    rules with min_gap_pct > 0 show their confirmed crosses instead of the raw ones.
+    `prices` is the symbol's full adjusted history. The stored signals are unchanged."""
+    filtered = [r for r in rules if r.type == "ma_cross" and r.params.get("min_gap_pct", 0) > 0]
+    if not filtered or prices.empty:
+        return signals
+    keep = signals[~signals["signal"].isin([r.name for r in filtered])]
+    confirmed = [confirmed_crosses(prices, r) for r in filtered]
+    out = pd.concat([keep, *confirmed], ignore_index=True)
+    out["date"] = pd.to_datetime(out["date"])
     return out.sort_values(["date", "signal"]).reset_index(drop=True)
 
 

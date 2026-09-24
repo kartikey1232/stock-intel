@@ -16,7 +16,7 @@ Last updated: 2026-09-24 (after the first ValuePickr run; own-thread boost commi
 | 5 | Signals & backtesting | 9 rule-based price signals (no look-ahead test), Nifty 50 benchmark, event study built; no signal tuned |
 | 6 | Scheduling, digests, Telegram alerts | Scheduling + macOS failure notifications done; digests and Telegram not started |
 
-- Tests: 430 passing (`uv run pytest`), ruff clean.
+- Tests: 436 passing (`uv run pytest`), ruff clean.
 - Watchlist (`config/watchlist.yaml`): RELIANCE, TCS, HDFCBANK, INFY, TMPV.
 - Git: `main`, pushed to the public repo https://github.com/kartikey1232/stock-intel
   (created 2026-09-24 after a history scan for secrets and personal data).
@@ -220,6 +220,18 @@ not in git.
   doesn't change the verdict.
 - The in-sample gap results were most likely chance findings, as the multiple-testing
   note warned.
+
+### Small fixes (2026-09-24)
+- The missing-bar check and signals treat a session as complete from 16:00 IST
+  (`FINAL_BAR_TIME`), not 15:30, because Yahoo's final bar can arrive late. News/social
+  session assignment still uses the 15:30 close.
+- `min_gap_pct` (ma_cross, default 0) confirms crosses for display and alerts only. With
+  real data, 0.25% would hide 1 of 31 crosses (an HDFCBANK death cross), 0.5% would hide 2
+  (plus TMPV's 2025-10-29 golden cross), 1% would hide 3. TMPV's 2025-11-19 death cross is
+  confirmed on 2025-11-21 at 0.5%. Left at 0: choose a value before relying on alerts.
+- `config/signals.yaml` changed (min_gap_pct lines added), so its git blob no longer
+  matches the one recorded in `docs/hypotheses.md`; the gap_up/gap_down settings the
+  registration froze are unchanged.
 
 ## Open items / next steps
 

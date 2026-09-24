@@ -202,3 +202,71 @@ def test_invalid_signal_definitions_are_rejected(tmp_path: Path, body: str, mess
     path.write_text(f"signals:\n  {body}\n", encoding="utf-8")
     with pytest.raises(SignalConfigError, match=message):
         load_signals(path)
+
+
+# --- min_gap_pct (display and alerts only) -----------------------------------------
+
+
+def with_gap(name: str, gap: float) -> SignalRule:
+    base = rule(name)
+    params = {**base.params, "min_gap_pct": gap}
+    return SignalRule(
+        base.name, base.type, base.direction, base.label, params, base.default_on, base.cooldown
+    )
+
+
+def whipsaw_then_trend() -> pd.DataFrame:
+    """SMA 50 barely pokes above SMA 200 and falls back (a whipsaw), then trends up."""
+    closes = [100.0] * 200 + [100.2] * 30 + [99.8] * 60 + [100.0 + 0.3 * i for i in range(120)]
+    return flat_bars(closes)
+
+
+def test_zero_min_gap_shows_exactly_the_raw_crosses() -> None:
+    bars = random_bars()
+    raw = sig.compute_signals(bars, [rule("golden_cross"), rule("death_cross")])
+    shown = sig.display_signals(
+        raw, bars, [with_gap("golden_cross", 0), with_gap("death_cross", 0)]
+    )
+    pd.testing.assert_frame_equal(shown.reset_index(drop=True), raw, check_dtype=False)
+
+
+def test_min_gap_hides_whipsaws_but_not_the_stored_signal() -> None:
+    bars = whipsaw_then_trend()
+    raw = sig.compute_signals(bars, [rule("golden_cross")])
+    assert len(raw) == 2  # the whipsaw's cross and the trend's cross
+    confirmed = sig.confirmed_crosses(bars, with_gap("golden_cross", 0.5))
+    assert len(confirmed) == 1  # only the trend reached a 0.5% gap
+    assert confirmed.iloc[0]["date"] > raw.iloc[1]["date"]  # shown on its confirmation day
+    assert confirmed.iloc[0]["value"] >= 0.5
+    # compute_signals (stored signals, backtest) ignores min_gap_pct entirely.
+    same = sig.compute_signals(bars, [with_gap("golden_cross", 0.5)])
+    pd.testing.assert_frame_equal(same, raw)
+
+
+def test_confirmed_crosses_never_use_future_bars() -> None:
+    bars = random_bars(700)
+    gap_rule = with_gap("golden_cross", 0.5)
+    full = sig.confirmed_crosses(bars, gap_rule)
+    assert len(full) > 0
+    for end in range(210, len(bars) + 1, 3):
+        past = sig.confirmed_crosses(bars.iloc[:end], gap_rule)
+        cutoff = bars["date"].iloc[end - 1]
+        expected = full[full["date"] <= cutoff].reset_index(drop=True)
+        pd.testing.assert_frame_equal(past, expected, check_dtype=False)
+
+
+def test_min_gap_must_be_non_negative_and_only_for_crosses(tmp_path: Path) -> None:
+    path = tmp_path / "signals.yaml"
+    path.write_text(
+        "signals:\n  x: {type: ma_cross, fast: 50, slow: 200, cross: above, "
+        "direction: bullish, min_gap_pct: -1}\n"
+    )
+    with pytest.raises(SignalConfigError, match="min_gap_pct"):
+        load_signals(path)
+    path.write_text(
+        "signals:\n  x: {type: gap, threshold_pct: 3, side: up, direction: bullish, "
+        "min_gap_pct: 1}\n"
+    )
+    with pytest.raises(SignalConfigError, match="unknown"):
+        load_signals(path)
+    assert rule("golden_cross").params["min_gap_pct"] == 0.0  # project default: no change

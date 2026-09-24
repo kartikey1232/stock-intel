@@ -61,8 +61,10 @@ uv run streamlit run dashboard.py               # launch the dashboard
   A rate limit gets one retry after 90 s; if it persists, the remaining stocks are skipped
   and fail. An empty response is always a failure, because every request starts at a date
   that has a bar.
-- After prices, every stock must have a bar for the latest completed session (15:30 IST
-  on a trading day, else the previous trading day). Trading days = weekdays minus
+- After prices, every stock must have a bar for the latest completed session (from 16:00
+  IST on a trading day, else the previous trading day; `FINAL_BAR_TIME`, because Yahoo's
+  final bar can arrive after the 15:30 close). Signals use the same cut-off. News and
+  social session assignment still uses the 15:30 close. Trading days = weekdays minus
   `config/market_holidays.yaml`, maintained by hand from NSE's holiday circular (never
   fetched: principle 7). Add next year's list each December; an unlisted holiday only
   causes a false failure that day.
@@ -285,6 +287,11 @@ uv run streamlit run dashboard.py               # launch the dashboard
   later corporate action rescales all earlier bars; then a later action can't change a
   past signal. `tests/test_signals.py` replays history bar by bar and fails if any day's
   signals differ from the full-history ones; keep it passing for every new rule.
+- `min_gap_pct` (ma_cross, default 0) is display/alert-only: `display_signals` swaps raw
+  crosses for `confirmed_crosses`, dated when the SMAs first stand min_gap_pct apart
+  without crossing back (causal). The stored `signals` table and the backtest always use
+  raw crosses. A filter on the stored cross-day value would be wrong: every cross's
+  spread is tiny on the day it crosses (0.001-0.3% here).
 - Event study (`processing/backtest.py`, settings in `config/backtest.yaml`): entry at
   the next open after a signal (a signal is only known at the close), h-day return =
   open(t+1) -> close(t+h), excess = minus Nifty 50 over the identical window. edge =

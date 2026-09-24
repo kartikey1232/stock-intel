@@ -11,6 +11,9 @@ logger = logging.getLogger(__name__)
 
 IST = ZoneInfo("Asia/Kolkata")
 MARKET_CLOSE = dt.time(15, 30)
+# Yahoo's final daily bar can arrive after the close, so a session only counts as
+# complete (for the missing-bar check and signals) from this time on.
+FINAL_BAR_TIME = dt.time(16, 0)
 DEFAULT_HOLIDAYS_PATH = Path(__file__).resolve().parent / "market_holidays.yaml"
 
 
@@ -36,14 +39,14 @@ def is_trading_day(day: dt.date, holidays: frozenset[dt.date]) -> bool:
 
 
 def latest_completed_session(now: dt.datetime, holidays: frozenset[dt.date]) -> dt.date:
-    """The most recent trading day whose session had closed (15:30 IST) at `now`.
+    """The most recent trading day whose final bar is due (16:00 IST, FINAL_BAR_TIME) at `now`.
 
     Logs a warning if the holidays file has no entries for that day's year, since every
     weekday then counts as a trading day.
     """
     local = now.astimezone(IST)
     day = local.date()
-    if local.time() < MARKET_CLOSE:
+    if local.time() < FINAL_BAR_TIME:
         day -= dt.timedelta(days=1)
     while not is_trading_day(day, holidays):
         day -= dt.timedelta(days=1)
