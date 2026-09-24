@@ -30,7 +30,8 @@ uv run pytest path/to/test_file.py::test_name   # run a single test
 uv run ruff check . && uv run ruff format .     # lint + format
 uv run python run_update.py [--skip-news] [--skip-filings] [--skip-social] [--failures-file PATH]  # prices -> indicators -> news -> filings -> social
 uv run python -m collectors.prices              # prices only
-uv run python -m processing.indicators [--full] # indicators only
+uv run python -m processing.indicators [--full] # indicators only (watchlist + benchmarks)
+uv run python -m processing.signals [--report]  # rebuild rule-based price signals; counts
 uv run python -m collectors.news                # news articles (Google News + publisher RSS)
 uv run python -m collectors.article_text [--reclean]  # full text for pending articles
 uv run python -m processing.stories [--full]    # group syndicated copies into stories
@@ -265,6 +266,17 @@ uv run streamlit run dashboard.py               # launch the dashboard
   never post text.
 - pandas-ta 0.4 emits RSI from bar 2; `processing/indicators.py` masks the warm-up.
   pandas-ta is a beta release pinned in `uv.lock`, and it caps numpy at 2.2 via numba.
+- Signals (`processing/signals.py`, parameters only in `config/signals.yaml`): rebuilt
+  from full adjusted history every run into `signals`. No look-ahead: a signal on day t
+  uses only bars up to t's close (backward rolling windows; the volume average excludes
+  t; bars after the latest completed session are dropped). Rules must stay ratios or
+  comparisons and `value` scale-free (%, multiple, RSI), because back-adjusting for a
+  later corporate action rescales all earlier bars; then a later action can't change a
+  past signal. `tests/test_signals.py` replays history bar by bar and fails if any day's
+  signals differ from the full-history ones; keep it passing for every new rule.
+- Benchmarks (`benchmarks:` in `config/watchlist.yaml`, e.g. NIFTY50 = ^NSEI) get prices,
+  the missing-bar check and indicators like stocks, but `load_watchlist()` never returns
+  them: no news, social, filings, signals or dashboard entry.
 - Tests must never hit the network or the real database; use a tmp SQLite engine and
   monkeypatch `storage.db.get_engine`.
 

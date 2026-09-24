@@ -21,7 +21,7 @@ import sys
 import pandas as pd
 import pandas_ta as ta
 
-from config.loader import load_watchlist
+from config.loader import load_benchmarks, load_watchlist
 from processing.adjustments import adjust_prices, sync_actions_from_config, warn_unrecorded_gaps
 from storage.db import (
     init_db,
@@ -156,7 +156,7 @@ def process_all(
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Entry point: compute indicators for the whole watchlist. Exit code 1 on failures."""
+    """Entry point: compute indicators for the watchlist and benchmarks. Exit 1 on failures."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--full", action="store_true", help="recompute all history")
     args = parser.parse_args(argv)
@@ -164,7 +164,8 @@ def main(argv: list[str] | None = None) -> int:
     setup_logging()
     init_db()
     changed = sync_actions_from_config()
-    failures = process_all([s.symbol for s in load_watchlist()], full=args.full, force_full=changed)
+    symbols = [s.symbol for s in [*load_watchlist(), *load_benchmarks()]]
+    failures = process_all(symbols, full=args.full, force_full=changed)
     return 1 if failures else 0
 
 

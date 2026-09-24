@@ -4,7 +4,7 @@ import datetime as dt
 import re
 from dataclasses import dataclass, fields
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import yaml
 
@@ -53,6 +53,25 @@ class Stock:
         return tuple(dict.fromkeys([base, self.aliases[0]]))
 
 
+@dataclass(frozen=True)
+class Benchmark:
+    """A benchmark index (e.g. Nifty 50): prices and indicators only."""
+
+    symbol: str
+    yf: str
+    name: str
+
+
+class PriceSeries(Protocol):
+    """Anything the price collector can fetch: a stock or a benchmark."""
+
+    @property
+    def symbol(self) -> str: ...
+
+    @property
+    def yf(self) -> str: ...
+
+
 _OPTIONAL_FIELDS = ["news_terms", "ambiguous_aliases", "exclude_patterns", "conditional_aliases"]
 _REQUIRED_FIELDS = [f.name for f in fields(Stock) if f.name not in _OPTIONAL_FIELDS]
 
@@ -73,6 +92,36 @@ def load_watchlist(path: Path = DEFAULT_WATCHLIST_PATH) -> list[Stock]:
     _check_unique(stocks, "symbol", path)
     _check_unique(stocks, "yf", path)
     return stocks
+
+
+def load_benchmarks(path: Path = DEFAULT_WATCHLIST_PATH) -> list[Benchmark]:
+    """Load the `benchmarks` list (empty if absent).
+
+    Raises:
+        WatchlistError: if an entry is malformed, its Yahoo ticker isn't an index (^...)
+            or NSE/BSE ticker, or its symbol clashes with a stock or another benchmark.
+    """
+    raw = _read_yaml(path)
+    entries = (raw.get("benchmarks") or []) if isinstance(raw, dict) else []
+    if not isinstance(entries, list):
+        raise WatchlistError(f"{path}: 'benchmarks' must be a list")
+    benchmarks = []
+    for index, entry in enumerate(entries):
+        where = f"{path}: benchmarks[{index}]"
+        if not isinstance(entry, dict) or set(entry) != {"symbol", "yf", "name"}:
+            raise WatchlistError(f"{where}: expected exactly symbol, yf and name")
+        if not all(isinstance(v, str) and v.strip() for v in entry.values()):
+            raise WatchlistError(f"{where}: symbol, yf and name must be non-empty strings")
+        yf_ticker = entry["yf"].strip()
+        if not (yf_ticker.startswith("^") or yf_ticker.endswith(VALID_YF_SUFFIXES)):
+            raise WatchlistError(f"{where}: 'yf' must be an index (^...) or end with .NS/.BO")
+        benchmarks.append(Benchmark(entry["symbol"].strip(), yf_ticker, entry["name"].strip()))
+    stock_symbols = {s.symbol.upper() for s in load_watchlist(path)}
+    symbols = [b.symbol.upper() for b in benchmarks]
+    clashes = sorted({s for s in symbols if s in stock_symbols or symbols.count(s) > 1})
+    if clashes:
+        raise WatchlistError(f"{path}: benchmark symbol(s) clash: {', '.join(clashes)}")
+    return benchmarks
 
 
 def _read_yaml(path: Path) -> Any:

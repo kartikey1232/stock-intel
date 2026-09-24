@@ -108,6 +108,23 @@ class Indicator(Base):
     volume_sma_20: Mapped[float | None] = mapped_column(Float)
 
 
+class Signal(Base):
+    """A rule-based price signal on one day (processing/signals.py, config/signals.yaml).
+
+    Computed only from bars up to and including `date`. `value` is scale-free (%, a
+    multiple or an RSI level); see config/signals.yaml for its meaning per signal type.
+    """
+
+    __tablename__ = "signals"
+
+    symbol: Mapped[str] = mapped_column(String(32), primary_key=True)
+    date: Mapped[dt.date] = mapped_column(Date, primary_key=True)
+    signal: Mapped[str] = mapped_column(String(64), primary_key=True)
+    direction: Mapped[str] = mapped_column(String(16), nullable=False)  # bullish|bearish|neutral
+    value: Mapped[float] = mapped_column(Float, nullable=False)
+    computed_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, nullable=False)
+
+
 class CorporateActionRow(Base):
     """A corporate action (split, bonus, demerger...) used to build adjusted prices.
 
@@ -389,6 +406,7 @@ TEXT_STATUSES = ("pending", "ok", "paywalled", "failed", "skipped")
 
 PRICES: Table = Price.__table__  # type: ignore[assignment]
 INDICATORS: Table = Indicator.__table__  # type: ignore[assignment]
+SIGNALS: Table = Signal.__table__  # type: ignore[assignment]
 CORPORATE_ACTIONS: Table = CorporateActionRow.__table__  # type: ignore[assignment]
 ACTION_COLUMNS = list(CORPORATE_ACTIONS.columns.keys())
 ARTICLES: Table = Article.__table__  # type: ignore[assignment]
@@ -532,6 +550,26 @@ def latest_indicator_date(symbol: str, engine: Engine | None = None) -> dt.date 
     stmt = select(func.max(INDICATORS.c.date)).where(INDICATORS.c.symbol == symbol)
     with (engine or get_engine()).connect() as conn:
         return conn.execute(stmt).scalar_one()
+
+
+def replace_signals(symbol: str, rows: list[dict[str, Any]], engine: Engine | None = None) -> None:
+    """Replace every stored signal for `symbol` with `rows`."""
+    with (engine or get_engine()).begin() as conn:
+        conn.execute(delete(SIGNALS).where(SIGNALS.c.symbol == symbol))
+        for chunk in _chunks(rows, UPSERT_CHUNK_SIZE):
+            conn.execute(SIGNALS.insert(), chunk)
+
+
+def read_signals(symbol: str | None = None, engine: Engine | None = None) -> pd.DataFrame:
+    """Stored signals (one symbol, or all), sorted by symbol and date."""
+    stmt = select(SIGNALS)
+    if symbol is not None:
+        stmt = stmt.where(SIGNALS.c.symbol == symbol)
+    stmt = stmt.order_by(SIGNALS.c.symbol, SIGNALS.c.date, SIGNALS.c.signal)
+    with (engine or get_engine()).connect() as conn:
+        return pd.DataFrame(
+            conn.execute(stmt).mappings().all(), columns=list(SIGNALS.columns.keys())
+        )
 
 
 def sync_corporate_actions(actions: pd.DataFrame, engine: Engine | None = None) -> set[str]:

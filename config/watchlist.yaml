@@ -99,3 +99,11 @@ stocks:
       # "Defender" is also Microsoft Defender, a newspaper name, a football position...
       - names: [Defender]
         context: [Land Rover]
+
+# Benchmark index series: prices and indicators are collected like the stocks above, but
+# benchmarks aren't watchlist stocks (no news, social, filings, signals, or dashboard
+# entry). Their symbols must not clash with a stock symbol.
+benchmarks:
+  - symbol: NIFTY50
+    yf: "^NSEI"
+    name: Nifty 50

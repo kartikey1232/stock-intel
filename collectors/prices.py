@@ -1,4 +1,4 @@
-"""Collect daily OHLCV prices from Yahoo Finance for every watchlist stock.
+"""Collect daily OHLCV prices from Yahoo Finance for every watchlist stock and benchmark.
 
 First run for a symbol fetches HISTORY_YEARS of history; later runs fetch from the last
 stored date onward (re-fetching that date, since it may have been a partial intraday bar).
@@ -19,6 +19,7 @@ import logging
 import random
 import sys
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from zoneinfo import ZoneInfo
 
@@ -26,7 +27,7 @@ import pandas as pd
 import yfinance as yf
 from yfinance.exceptions import YFRateLimitError
 
-from config.loader import Stock, load_watchlist
+from config.loader import PriceSeries, load_benchmarks, load_watchlist
 from config.market_calendar import latest_completed_session, load_holidays
 from storage.db import count_prices, init_db, latest_price_date, upsert_prices
 from utils import setup_logging
@@ -151,7 +152,7 @@ def _is_holiday_placeholder(df: pd.DataFrame) -> pd.Series:
     return flat & (df["volume"].fillna(0) == 0)
 
 
-def collect_symbol(stock: Stock, today: dt.date) -> int:
+def collect_symbol(stock: PriceSeries, today: dt.date) -> int:
     """Fetch, normalise and upsert prices for one stock. Returns rows written."""
     last_stored = latest_price_date(stock.symbol)
     start = fetch_start_date(last_stored, today)
@@ -179,7 +180,7 @@ def collect_symbol(stock: Stock, today: dt.date) -> int:
     return written
 
 
-def collect_all(stocks: list[Stock]) -> RunSummary:
+def collect_all(stocks: Sequence[PriceSeries]) -> RunSummary:
     """Collect prices for every stock; one failure never stops the others.
 
     The exception is a persistent Yahoo rate limit: the remaining stocks are then marked
@@ -204,7 +205,9 @@ def collect_all(stocks: list[Stock]) -> RunSummary:
     return summary
 
 
-def missing_session_bars(stocks: list[Stock], now: dt.datetime | None = None) -> dict[str, str]:
+def missing_session_bars(
+    stocks: Sequence[PriceSeries], now: dt.datetime | None = None
+) -> dict[str, str]:
     """Stocks without a stored bar for the latest completed trading session.
 
     Returns {symbol: reason}. Before 15:30 IST the session checked is the previous
@@ -242,10 +245,10 @@ def log_summary(summary: RunSummary) -> None:
 
 
 def main() -> int:
-    """Entry point: collect prices for the whole watchlist. Exit code 1 if any failed."""
+    """Entry point: collect prices for the watchlist and benchmarks. Exit code 1 on failure."""
     setup_logging()
     init_db()
-    stocks = load_watchlist()
+    stocks = [*load_watchlist(), *load_benchmarks()]
     summary = collect_all(stocks)
     log_summary(summary)
     missing = missing_session_bars(stocks)

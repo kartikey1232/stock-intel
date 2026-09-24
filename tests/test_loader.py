@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from config.loader import Stock, WatchlistError, load_watchlist
+from config.loader import Benchmark, Stock, WatchlistError, load_benchmarks, load_watchlist
 
 VALID_ENTRY = """
   - symbol: INFY
@@ -68,3 +68,33 @@ def test_invalid_configs_raise(tmp_path: Path, body: str, message: str) -> None:
 def test_missing_file_raises(tmp_path: Path) -> None:
     with pytest.raises(WatchlistError, match="not found"):
         load_watchlist(tmp_path / "nope.yaml")
+
+
+def test_benchmarks_are_loaded_separately_from_stocks(tmp_path: Path) -> None:
+    body = (
+        "stocks:"
+        + VALID_ENTRY
+        + '\nbenchmarks:\n  - {symbol: NIFTY50, yf: "^NSEI", name: Nifty 50}\n'
+    )
+    path = write_yaml(tmp_path, body)
+    assert load_benchmarks(path) == [Benchmark("NIFTY50", "^NSEI", "Nifty 50")]
+    assert [s.symbol for s in load_watchlist(path)] == ["INFY"]
+    assert load_benchmarks(write_yaml(tmp_path, "stocks:" + VALID_ENTRY)) == []
+
+
+@pytest.mark.parametrize(
+    ("benchmark", "message"),
+    [
+        ('{symbol: INFY, yf: "^NSEI", name: Clash}', "clash"),
+        ("{symbol: NIFTY50, yf: NSEI, name: Nifty 50}", "index"),
+        ('{symbol: NIFTY50, yf: "^NSEI"}', "exactly"),
+    ],
+)
+def test_invalid_benchmarks_raise(tmp_path: Path, benchmark: str, message: str) -> None:
+    path = write_yaml(tmp_path, "stocks:" + VALID_ENTRY + f"\nbenchmarks:\n  - {benchmark}\n")
+    with pytest.raises(WatchlistError, match=message):
+        load_benchmarks(path)
+
+
+def test_project_benchmark_is_nifty_50() -> None:
+    assert [(b.symbol, b.yf) for b in load_benchmarks()] == [("NIFTY50", "^NSEI")]

@@ -1,0 +1,88 @@
+# Rule-based price signals for processing/signals.py (Phase 5).
+#
+# Every signal is computed from corporate-action adjusted daily bars and may only use
+# data available at the close of its date. All rules are ratios or comparisons, and every
+# stored `value` is scale-free (%, a multiple, or an RSI level), so a later split or bonus
+# (which rescales all earlier bars by one factor) never changes a past signal.
+#
+# Fields:
+#   type:        ma_cross | rsi_cross | volume_spike | range_breakout | gap
+#   direction:   bullish | bearish | from_price (the sign of that day's close-to-close move)
+#   label:       shown on the dashboard
+#   default_on:  whether the dashboard shows its markers without being ticked
+#   cooldown:    bars after a signal during which the same signal isn't repeated (default 0)
+#
+# value per type: ma_cross = fast/slow SMA spread in %; rsi_cross = RSI; volume_spike =
+# volume as a multiple of its average; range_breakout = % beyond the prior extreme;
+# gap = open vs previous close in %.
+
+signals:
+  golden_cross:
+    type: ma_cross
+    fast: 50
+    slow: 200
+    cross: above
+    direction: bullish
+    label: Golden cross (SMA 50 > 200)
+    default_on: true
+  death_cross:
+    type: ma_cross
+    fast: 50
+    slow: 200
+    cross: below
+    direction: bearish
+    label: Death cross (SMA 50 < 200)
+    default_on: true
+  rsi_below_30:
+    type: rsi_cross
+    length: 14
+    level: 30
+    cross: below
+    direction: bullish      # oversold: the conventional (contrarian) reading
+    label: RSI crosses below 30
+    default_on: false
+  rsi_above_70:
+    type: rsi_cross
+    length: 14
+    level: 70
+    cross: above
+    direction: bearish      # overbought
+    label: RSI crosses above 70
+    default_on: false
+  volume_spike:
+    type: volume_spike
+    window: 20              # average of the 20 bars before the signal day (not including it)
+    multiple: 2.0
+    direction: from_price
+    label: Volume > 2x 20-day average
+    default_on: false
+  high_52w_breakout:
+    type: range_breakout
+    window: 252             # trading days in ~52 weeks
+    side: high              # close above the highest high of the previous 252 bars
+    direction: bullish
+    label: 52-week high breakout
+    default_on: true
+    cooldown: 20            # a run of new highs is one signal, not one per day
+  low_52w_breakdown:
+    type: range_breakout
+    window: 252
+    side: low               # close below the lowest low of the previous 252 bars
+    direction: bearish
+    label: 52-week low breakdown
+    default_on: true
+    cooldown: 20
+  gap_up:
+    type: gap
+    threshold_pct: 3.0      # open more than 3% above the previous close
+    side: up
+    direction: bullish
+    label: Gap up > 3%
+    default_on: false
+  gap_down:
+    type: gap
+    threshold_pct: 3.0
+    side: down
+    direction: bearish
+    label: Gap down > 3%
+    default_on: false

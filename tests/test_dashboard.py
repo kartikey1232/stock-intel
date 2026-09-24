@@ -316,3 +316,37 @@ def test_price_figure_draws_results_markers() -> None:
     markers = pd.DataFrame({"date": [dt.date(2026, 7, 18)], "label": ["FY27Q1 results"]})
     fig = dashboard.build_figure(history(), "TEST", results=markers)
     assert "FY27Q1 results" in [a.text for a in fig.layout.annotations]
+
+
+def test_signal_markers_follow_toggles_and_sit_outside_the_candle() -> None:
+    from config.signals import load_signals
+
+    rules = load_signals()
+    bars = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2026-09-21", "2026-09-22"]),
+            "high": [110.0, 120.0],
+            "low": [90.0, 100.0],
+            "close": [100.0, 110.0],
+        }
+    )
+    signals = pd.DataFrame({
+        "symbol": "X", "date": [dt.date(2026, 9, 21), dt.date(2026, 9, 21), dt.date(2026, 9, 22)],
+        "signal": ["high_52w_breakout", "golden_cross", "low_52w_breakdown"],
+        "direction": ["bullish", "bullish", "bearish"], "value": [1.5, 0.2, -2.0],
+    })  # fmt: skip
+    markers = dashboard.signal_markers(
+        signals, bars, rules, ["high_52w_breakout", "golden_cross", "low_52w_breakdown"]
+    ).set_index("signal")
+    assert markers.loc["golden_cross", "y"] == pytest.approx(90 * 0.98)  # below the low
+    assert markers.loc["high_52w_breakout", "y"] == pytest.approx(90 * 0.96)  # stacked
+    assert markers.loc["low_52w_breakdown", "y"] == pytest.approx(120 * 1.02)  # above the high
+    assert markers.loc["low_52w_breakdown", "shape"] == "triangle-down"
+    assert "+1.50% beyond" in markers.loc["high_52w_breakout", "text"]
+    only = dashboard.signal_markers(signals, bars, rules, ["golden_cross"])
+    assert only["signal"].tolist() == ["golden_cross"]
+    assert dashboard.signal_markers(signals, bars, rules, []).empty
+    fig = dashboard.build_figure(
+        history(), "TEST", signals=dashboard.signal_markers(signals, bars, rules, ["golden_cross"])
+    )
+    assert "Golden cross (SMA 50 > 200)" in [t.name for t in fig.data]

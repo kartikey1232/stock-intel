@@ -1,9 +1,11 @@
-"""Daily update: prices, indicators, news, filings and social posts for the watchlist.
+"""Daily update: prices, indicators, signals, news, filings and social posts.
 
 Steps:
-  1. prices       collect daily OHLCV (collectors.prices), then check every stock has a
-                  bar for the latest completed trading session
-  2. indicators   sync corporate actions, compute indicators (processing.indicators)
+  1. prices       collect daily OHLCV for the watchlist and benchmarks (collectors.prices),
+                  then check each has a bar for the latest completed trading session
+  2. indicators   sync corporate actions, compute indicators for the watchlist and
+     + signals    benchmarks (processing.indicators), then rebuild rule-based price
+                  signals for the watchlist (processing.signals, config/signals.yaml)
   3. news         collect articles -> article text -> story grouping -> entity linking
                   -> sentiment -> daily aggregates (skip with --skip-news)
   4. filings      HDFC Bank results PDFs from its IR site -> import the results inbox
@@ -31,13 +33,14 @@ import argparse
 import logging
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from collectors.prices import collect_all, log_summary, missing_session_bars
-from config.loader import Stock, load_watchlist
+from config.loader import PriceSeries, Stock, load_benchmarks, load_watchlist
 from processing.adjustments import sync_actions_from_config
 from processing.indicators import process_all
+from processing.signals import run as compute_signals
 from storage.db import init_db
 from utils import setup_logging
 
@@ -179,7 +182,7 @@ def run_social(stocks: list[Stock]) -> list[str]:
     return run_steps("social", lambda: social_steps(stocks))
 
 
-def check_session_bars(stocks: list[Stock], already_failed: set[str]) -> list[str]:
+def check_session_bars(stocks: Sequence[PriceSeries], already_failed: set[str]) -> list[str]:
     """Stocks missing the latest session's bar, excluding ones whose download failed."""
     try:
         missing = missing_session_bars(stocks)
@@ -200,17 +203,21 @@ def run(
     started = time.monotonic()
     init_db()
     stocks = load_watchlist()
+    series = [*stocks, *load_benchmarks()]
 
-    logger.info("Step 1/5: collecting prices for %d stock(s)", len(stocks))
-    price_summary = collect_all(stocks)
+    logger.info("Step 1/5: collecting prices for %d stock(s) and %d benchmark(s)",
+                len(stocks), len(series) - len(stocks))  # fmt: skip
+    price_summary = collect_all(series)
     log_summary(price_summary)
-    missing_bars = check_session_bars(stocks, set(price_summary.failures))
+    missing_bars = check_session_bars(series, set(price_summary.failures))
 
-    logger.info("Step 2/5: computing indicators%s", " (full recompute)" if full_indicators else "")
+    logger.info("Step 2/5: computing indicators%s and signals",
+                " (full recompute)" if full_indicators else "")  # fmt: skip
     changed_actions = sync_actions_from_config()
     indicator_failures = process_all(
-        [s.symbol for s in stocks], full=full_indicators, force_full=changed_actions
+        [s.symbol for s in series], full=full_indicators, force_full=changed_actions
     )
+    signal_failures = compute_signals(stocks)
 
     news_failures: list[str] = []
     if skip_news:
@@ -236,6 +243,7 @@ def run(
     failed = [f"prices: {symbol}" for symbol in sorted(price_summary.failures)]
     failed += [f"missing bar: {symbol}" for symbol in missing_bars]
     failed += [f"indicators: {symbol}" for symbol in sorted(indicator_failures)]
+    failed += [f"signals: {symbol}" for symbol in sorted(signal_failures)]
     failed += [f"news: {name}" for name in news_failures]
     failed += [f"filings: {name}" for name in filings_failures]
     failed += [f"social: {name}" for name in social_failures]

@@ -14,6 +14,7 @@ from plotly.subplots import make_subplots
 
 from config.loader import Stock, load_watchlist
 from config.news_sources import load_news_sources
+from config.signals import SignalRule, load_signals
 from processing.adjustments import adjust_prices
 from processing.entities import LINK_THRESHOLD
 from processing.results import changes, joined_notes
@@ -26,6 +27,7 @@ from storage.db import (
     read_pending_actions,
     read_prices,
     read_results,
+    read_signals,
     read_stock_filings,
     read_stock_news,
     read_story_sources,
@@ -55,6 +57,12 @@ PENDING_WARN = ("upcoming", "undated", "needs_review")
 BADGE_THRESHOLD = 0.25  # story score at or beyond +/- this gets a positive/negative badge
 MAX_NEWS_ITEMS = 40
 MAX_SOCIAL_ITEMS = 40
+NEUTRAL_COLOR = "#9e9e9e"
+SIGNAL_SHAPES = {  # marker shape by signal type; colour and up/down side by direction
+    "ma_cross": "star", "rsi_cross": "diamond", "volume_spike": "circle",
+    "range_breakout": "triangle-up", "gap": "square",
+}  # fmt: skip
+SIGNAL_OFFSET = 0.02  # markers sit this fraction below the low (bullish) / above the high
 PLATFORM_NAMES = {"valuepickr": "ValuePickr"}
 
 
@@ -117,6 +125,18 @@ def cached_news(symbol: str, model_name: str) -> pd.DataFrame:
     articles = read_stock_news(symbol, model_name, LINK_THRESHOLD)
     story_ids = articles["story_id"].dropna().unique().tolist()
     return news_items(articles, read_story_sources(story_ids), TradingCalendar(trading_dates()))
+
+
+@st.cache_data(ttl=CACHE_TTL_S, show_spinner=False)
+def cached_signals(symbol: str) -> pd.DataFrame:
+    """This stock's rule-based signals, cached."""
+    return read_signals(symbol)
+
+
+@st.cache_data(ttl=CACHE_TTL_S, show_spinner=False)
+def cached_signal_rules() -> list[SignalRule]:
+    """Signal definitions from config/signals.yaml, cached."""
+    return load_signals()
 
 
 @st.cache_data(ttl=CACHE_TTL_S, show_spinner=False)
@@ -292,6 +312,59 @@ def news_items(
     return reps.reset_index().sort_values("news_time", ascending=False).reset_index(drop=True)
 
 
+def signal_markers(
+    signals: pd.DataFrame, bars: pd.DataFrame, rules: list[SignalRule], selected: list[str]
+) -> pd.DataFrame:
+    """Chart positions for the selected signals on the displayed bars.
+
+    Bullish markers sit below the day's low, bearish ones above its high, neutral ones at
+    the close; several signals on one day are stacked. Columns: date, y, signal, label,
+    shape, color, text.
+    """
+    columns = ["date", "y", "signal", "label", "shape", "color", "text"]
+    if signals.empty or not selected:
+        return pd.DataFrame(columns=columns)
+    by_name = {r.name: r for r in rules}
+    chosen = signals[signals["signal"].isin(selected) & signals["signal"].isin(by_name)].copy()
+    chosen["date"] = pd.to_datetime(chosen["date"])
+    merged = chosen.merge(bars[["date", "high", "low", "close"]], on="date", how="inner")
+    if merged.empty:
+        return pd.DataFrame(columns=columns)
+    merged = merged.sort_values(["date", "signal"])
+    merged["stack"] = merged.groupby(["date", "direction"]).cumcount() + 1
+    offset = SIGNAL_OFFSET * merged["stack"]
+    merged["y"] = merged["close"]
+    bull, bear = merged["direction"] == "bullish", merged["direction"] == "bearish"
+    merged.loc[bull, "y"] = merged.loc[bull, "low"] * (1 - offset[bull])
+    merged.loc[bear, "y"] = merged.loc[bear, "high"] * (1 + offset[bear])
+    merged["shape"] = merged["signal"].map(lambda s: SIGNAL_SHAPES[by_name[s].type])
+    merged.loc[bear & (merged["shape"] == "triangle-up"), "shape"] = "triangle-down"
+    merged["color"] = (
+        merged["direction"].map({"bullish": UP_COLOR, "bearish": DOWN_COLOR}).fillna(NEUTRAL_COLOR)
+    )
+    merged["label"] = merged["signal"].map(lambda s: by_name[s].label)
+    merged["text"] = [
+        f"{label} ({direction}): {describe_signal_value(by_name[s].type, v)}"
+        for label, direction, s, v in zip(
+            merged["label"], merged["direction"], merged["signal"], merged["value"], strict=True
+        )
+    ]
+    return merged[columns].reset_index(drop=True)
+
+
+def describe_signal_value(kind: str, value: float) -> str:
+    """Human-readable signal value (see config/signals.yaml for the units)."""
+    if kind == "rsi_cross":
+        return f"RSI {value:.1f}"
+    if kind == "volume_spike":
+        return f"{value:.1f}x average volume"
+    if kind == "ma_cross":
+        return f"SMA spread {value:+.2f}%"
+    if kind == "range_breakout":
+        return f"{value:+.2f}% beyond the prior 52-week extreme"
+    return f"gap {value:+.2f}%"
+
+
 def social_items(posts: pd.DataFrame, calendar: TradingCalendar) -> pd.DataFrame:
     """Linked posts, newest first, with `post_time` (IST-aware) and `session_date`."""
     if posts.empty:
@@ -445,9 +518,11 @@ def build_figure(
     actions: pd.DataFrame | None = None,
     news: pd.DataFrame | None = None,
     results: pd.DataFrame | None = None,
+    signals: pd.DataFrame | None = None,
 ) -> go.Figure:
     """Candlestick + SMA/Bollinger overlays, volume, RSI, MACD and (optionally) a news
-    sentiment panel, all on one shared date axis.
+    sentiment panel, all on one shared date axis. `signals` (from signal_markers) adds one
+    marker trace per signal on the price panel.
 
     Each row of `actions` is drawn as a dashed vertical line labelled at the top. `news`
     is news_daily rows (session_date, weighted_score, story_count). `results` (date,
@@ -509,6 +584,28 @@ def build_figure(
             fig.add_trace(
                 go.Scatter(x=x, y=df[column], name=label, line={"color": color, "width": 1.5}), 1, 1
             )
+
+    has_signals = signals is not None and not signals.empty
+    for name, group in signals.groupby("signal", sort=False) if has_signals else []:
+        fig.add_trace(
+            go.Scatter(
+                x=group["date"],
+                y=group["y"],
+                mode="markers",
+                name=group["label"].iloc[0],
+                marker={
+                    "symbol": group["shape"],
+                    "color": group["color"],
+                    "size": 11,
+                    "line": {"width": 1, "color": "white"},
+                },  # fmt: skip
+                hovertext=group["text"],
+                hoverinfo="text",
+                legendgroup=f"signal-{name}",
+            ),
+            1,
+            1,
+        )
 
     up = df["close"] >= df["open"]
     fig.add_trace(
@@ -876,6 +973,14 @@ def sidebar(stocks: list[Stock]) -> tuple[Stock, str]:
     return by_symbol[symbol], mode
 
 
+def signal_toggles(rules: list[SignalRule]) -> list[str]:
+    """Sidebar checkbox per signal (defaults from config/signals.yaml). Returns ticked names."""
+    with st.sidebar.expander("Signals on chart", expanded=True):
+        return [
+            r.name for r in rules if st.checkbox(r.label, value=r.default_on, key=f"sig-{r.name}")
+        ]
+
+
 def date_range_picker(first: dt.date, last: dt.date) -> tuple[dt.date, dt.date]:
     """Sidebar date range picker defaulting to the last year of data."""
     default_start = max(first, last - dt.timedelta(days=DEFAULT_RANGE_DAYS))
@@ -897,6 +1002,8 @@ def main() -> None:
     """Render the dashboard."""
     st.set_page_config(page_title="stock-intel", page_icon="📈", layout="wide")
     stock, mode = sidebar(cached_watchlist())
+    rules = cached_signal_rules()
+    selected_signals = signal_toggles(rules)
 
     prices = cached_prices(stock.symbol)
     st.header(f"{stock.name} ({stock.symbol})")
@@ -943,7 +1050,15 @@ def main() -> None:
     filings = cached_filings(stock.symbol)
     markers = results_markers(filings, start, end)
     st.plotly_chart(
-        build_figure(view, stock.symbol, visible_actions, news_view, markers), width="stretch"
+        build_figure(
+            view,
+            stock.symbol,
+            visible_actions,
+            news_view,
+            markers,
+            signal_markers(cached_signals(stock.symbol), view, rules, selected_signals),
+        ),
+        width="stretch",
     )
 
     for _, action in visible_actions.iterrows():
