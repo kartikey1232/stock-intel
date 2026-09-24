@@ -171,6 +171,13 @@ uv run streamlit run dashboard.py               # launch the dashboard
   forbid reproduction without written consent. The `filings` table and
   `processing/filing_categories.py` are source-agnostic, so a collector can be added later
   without changing them.
+- HDFC Bank IR fetching (`collectors/results_ir.py`) is allowed only under the personal,
+  non-commercial exception in HDFC Bank's Website Usage Terms (hdfc.bank.in, checked
+  2026-09-23): no bot clause, robots.txt allows `*`, but site content may be entered into a
+  database only when downloaded "for my own personal, non-commercial use". If the project
+  becomes a product (multiple users, commercial use), switch HDFC Bank to the results
+  inbox or get written permission first. Don't add another company's IR site without
+  checking its terms the same way.
 - Filing categories: a board meeting "to consider" X is a board_meeting, never an action.
   Corporate actions found in filings go to `pending_actions` with a status; the code must
   never write `config/corporate_actions.yaml` (there's a test for this). Because Yahoo
@@ -184,10 +191,13 @@ uv run streamlit run dashboard.py               # launch the dashboard
   rebuilt from stored files on every run.
 - XBRL: elements are matched by local name (prefixes differ between taxonomies). Values are
   absolute INR, divided by 1e7 for crore. Q4 filings also contain full-year contexts, so
-  the parser only accepts ~3-month contexts. Bank tags in `XBRL_TAGS` are verified against
-  HDFC Bank's FY27Q1 files: net NPA is `NonPerformingAssets` (no "Net"), NPA ratios are
-  fractions (0.0117, stored as 1.17 %), and consolidated `ProfitLossForThePeriod` is before
-  minority interest (owners' profit is
+  the parser only accepts ~3-month contexts. Pre-2025 NSE files (FY25Q2, FY25Q3) give the
+  year-to-date context (`FourD`) the quarter's period dates; each context's
+  `DateOfStartOfReportingPeriod`/`DateOfEndOfReportingPeriod` facts override its period
+  dates, so the parser never relies on document order. Bank tags in `XBRL_TAGS` are
+  verified against HDFC Bank's FY27Q1 files: net NPA is `NonPerformingAssets` (no "Net"),
+  NPA ratios are fractions (0.0117, stored as 1.17 %), and consolidated
+  `ProfitLossForThePeriod` is before minority interest (owners' profit is
   `ProfitLossAfterTaxesMinorityInterestAndShareOfProfitLossOfAssociates`). Consolidated
   bank files put 0 in the NPA fields; those placeholders are dropped.
 - HDFC Bank's PDFs are scanned images with an OCR text layer: expect "eamed", "18187 49"
@@ -200,8 +210,8 @@ uv run streamlit run dashboard.py               # launch the dashboard
   `qoq_note`/`yoy_note` for comparisons that span it (shown in the dashboard and
   `--report`). The demerger's accounting quarter (FY26Q2, to 30 Sep) is earlier than its
   price ex-date (14 Oct), so detect it from the filings, not `corporate_actions.yaml`.
-- Per-share figures are as reported: HDFC Bank's pre-Aug-2025 EPS is on the pre-bonus
-  share count and isn't restated.
+- Per-share figures are as reported: HDFC Bank's pre-Aug-2025 EPS and RELIANCE's FY25Q2
+  EPS (before its Oct-2024 1:1 bonus) are on the pre-bonus share count and aren't restated.
 - Moneycontrol RSS is frozen (newest items 2024) and Business Standard RSS returns 403 to
   non-browser clients; both are excluded from `config/news_sources.yaml`. Don't spoof a
   browser User-Agent to get around blocks.

@@ -143,6 +143,30 @@ def test_q4_xbrl_picks_the_quarter_not_the_year() -> None:
     assert p.values["revenue"][0] == pytest.approx(40000.0)  # not 160000 (full year)
 
 
+def test_mislabelled_year_to_date_context_is_not_taken_for_the_quarter() -> None:
+    # Pre-2025 NSE files give the half-year context (FourD) the quarter's period dates;
+    # only its DateOfStartOfReportingPeriod fact says it starts in April. Put it first
+    # so document order can't rescue the parser.
+    ytd = (
+        '<xbrli:context id="FourD"><xbrli:entity><xbrli:identifier scheme="x">1'
+        "</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:startDate>2024-07-01"
+        "</xbrli:startDate><xbrli:endDate>2024-09-30</xbrli:endDate></xbrli:period>"
+        "</xbrli:context>"
+        '<in-capmkt:DateOfStartOfReportingPeriod contextRef="FourD">2024-04-01'
+        "</in-capmkt:DateOfStartOfReportingPeriod>"
+        '<in-capmkt:DateOfEndOfReportingPeriod contextRef="FourD">2024-09-30'
+        "</in-capmkt:DateOfEndOfReportingPeriod>"
+        '<in-capmkt:RevenueFromOperations contextRef="FourD" unitRef="INR" decimals="-7">'
+        "1268720000000</in-capmkt:RevenueFromOperations>"
+    )
+    content = xbrl(end="2024-09-30", start="2024-07-01", revenue=642_590_000_000)
+    first = b'<xbrli:context id="OneD">'
+    content = content.replace(first, ytd.encode() + first)
+    p = res.parse_xbrl(content)
+    assert p.period_end == dt.date(2024, 9, 30)
+    assert p.values["revenue"][0] == pytest.approx(64259.0)  # not 126872 (half year)
+
+
 def test_consolidated_basis_and_owner_profit_preferred() -> None:
     extra = (
         '<in-capmkt:ProfitOrLossAttributableToOwnersOfParent contextRef="OneD" unitRef="INR">'

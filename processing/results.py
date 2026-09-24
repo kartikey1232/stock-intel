@@ -181,6 +181,7 @@ def parse_xbrl(content: bytes) -> ParsedResult:
         elif el.get("contextRef"):
             facts.append((name, el.get("contextRef"), el.get("unitRef"), (el.text or "").strip()))
 
+    _apply_declared_periods(contexts, facts)
     text = {n: t for n, _, u, t in facts if u is None and t}
     start = _parse_day(text.get("DateOfStartOfReportingPeriod"))
     end = _parse_day(text.get("DateOfEndOfReportingPeriod"))
@@ -226,6 +227,24 @@ def parse_xbrl(content: bytes) -> ParsedResult:
         parsed.values[metric] = (value, unit)
     _add_nii(parsed.values)
     return parsed
+
+
+def _apply_declared_periods(
+    contexts: dict[str, tuple[dt.date | None, dt.date | None, bool]],
+    facts: list[tuple[str, str, str | None, str]],
+) -> None:
+    """Replace context dates with the reporting period each context declares, if any.
+
+    Pre-2025 NSE files give the year-to-date context (FourD) the quarter's period dates;
+    only its DateOfStartOfReportingPeriod/DateOfEndOfReportingPeriod facts say what it covers.
+    """
+    fields = {"DateOfStartOfReportingPeriod": 0, "DateOfEndOfReportingPeriod": 1}
+    for name, cid, _, raw in facts:
+        day = _parse_day(raw) if name in fields else None
+        if day and cid in contexts:
+            dates = list(contexts[cid])
+            dates[fields[name]] = day
+            contexts[cid] = (dates[0], dates[1], dates[2])
 
 
 def _current_context(contexts, start, end) -> str | None:

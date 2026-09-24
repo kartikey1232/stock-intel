@@ -191,6 +191,13 @@ uv run python -m processing.filing_categories
 There is no filings collector yet. NSE's terms prohibit automated collection, and how
 filings will be sourced (BSE, a manual inbox, or licensed data) is still undecided.
 
+HDFC Bank's [Website Usage Terms](https://www.hdfc.bank.in/useful-links/website-usage-terms)
+(checked 2026-09-23) don't mention bots, and its robots.txt allows all agents, but they
+forbid entering site content into a database except what you download "for my own
+personal, non-commercial use". The automatic IR PDF download (`collectors.results_ir`)
+relies on that exception. If this project becomes a product, switch HDFC Bank to the
+results inbox or get HDFC Bank's permission first.
+
 ## Quarterly results
 
 Results are stored in long format (`results` table): one row per symbol, quarter, basis
