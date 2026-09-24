@@ -173,6 +173,17 @@ def filing_badge(filing_type: str | None) -> str:
     return f":{FILING_BADGE_COLORS.get(kind, 'gray')}-badge[{kind.replace('_', ' ')}]"
 
 
+def flags_text(raw: pd.DataFrame) -> str:
+    """One quarter's validation flags; reviewed ones show as "reviewed: <reason>"."""
+    flagged = raw[raw["flag"].notna()]
+    reviewed = flagged["flag_reviewed"] if "flag_reviewed" in flagged else pd.Series(dtype=str)
+    texts = {
+        f"reviewed: {reviewed[i]}" if pd.notna(reviewed.get(i)) else flagged.at[i, "flag"]
+        for i in flagged.index
+    }
+    return "; ".join(sorted(texts))
+
+
 def results_table(results: pd.DataFrame, basis: str, quarters: int = 8) -> pd.DataFrame:
     """Last `quarters` of headline results for one basis, with QoQ/YoY.
 
@@ -196,7 +207,7 @@ def results_table(results: pd.DataFrame, basis: str, quarters: int = 8) -> pd.Da
             row[f"{name}_qoq"] = by["qoq"].get(metric)
         row["eps"] = by["value"].get("eps")
         row["source"] = "PDF (lower trust)" if (raw["trust"] == "low").any() else "XBRL"
-        row["flags"] = "; ".join(sorted(raw["flag"].dropna().unique()))
+        row["flags"] = flags_text(raw)
         row["notes"] = joined_notes(q[q["metric"].isin([top, "net_profit"])])
         out.append(row)
     table = pd.DataFrame(out).sort_values("period_end")

@@ -281,6 +281,7 @@ class Result(Base):
     filing_id: Mapped[str] = mapped_column(String(64), nullable=False)
     extracted_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, nullable=False)
     flag: Mapped[str | None] = mapped_column(Text)  # validation warning, if any
+    flag_reviewed: Mapped[str | None] = mapped_column(Text)  # acknowledgement reason, if any
 
 
 TEXT_STATUSES = ("pending", "ok", "paywalled", "failed", "skipped")

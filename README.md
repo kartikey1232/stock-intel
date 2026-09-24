@@ -203,7 +203,11 @@ results inbox or get HDFC Bank's permission first.
 Results are stored in long format (`results` table): one row per symbol, quarter, basis
 (standalone/consolidated) and line item, in ₹ crore (EPS in ₹/share, NPA ratios in %).
 Headline metrics get QoQ/YoY changes and validation flags (a >5x jump or an unexpected
-sign change usually means a unit or parsing error).
+sign change usually means a unit or parsing error). Once you've checked a flag and it's a
+real event (e.g. TMPV's demerger quarters), record it in
+[`config/acknowledged_flags.yaml`](config/acknowledged_flags.yaml) with the exact flag text
+and a reason: it then logs at INFO and shows as "reviewed" in the dashboard (`~` in
+`--report`). If the flag's text changes later, it warns again.
 
 Where the files come from:
 
@@ -298,6 +302,8 @@ New stocks get their full 5-year history on the next update.
 │   ├── loader.py          # Loads and validates the watchlist
 │   ├── corporate_actions.yaml  # Splits/bonuses/demergers (reviewed in git)
 │   ├── corporate_actions.py    # Loads and validates corporate actions
+│   ├── acknowledged_flags.yaml # Results validation flags reviewed by hand
+│   ├── acknowledged_flags.py   # Loads and validates acknowledged flags
 │   ├── news_sources.yaml  # RSS feeds, Google News settings, rate limits
 │   └── news_sources.py    # Loads and validates news sources
 ├── collectors/            # Fetch and store RAW data only (no analysis)

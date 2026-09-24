@@ -1,0 +1,94 @@
+# Results validation flags reviewed by hand (see processing/results.py `validate`).
+#
+# A flag counts as reviewed only while its text matches `flag` exactly. If new data or a
+# parser change produces different text for the same key, it warns again: re-check it and
+# update `flag` here. Copy `flag` from the results table or the WARNING log line.
+# Reviewed flags log at INFO and show as "reviewed: <reason>" in the dashboard.
+#
+# Fields: symbol, quarter (FY26Q2), basis (standalone | consolidated), metric, flag, reason.
+
+acknowledged:
+- symbol: TMPV
+  quarter: FY26Q2
+  basis: standalone
+  metric: eps
+  flag: 0.0x vs previous quarter (14.53); sign change (profit/loss swing?) - check
+  reason: 'demerger: CV business discontinued, one-time gain'
+- symbol: TMPV
+  quarter: FY26Q2
+  basis: standalone
+  metric: net_profit
+  flag: 15.3x vs previous quarter (5350)
+  reason: 'demerger: CV business discontinued, one-time gain'
+- symbol: TMPV
+  quarter: FY26Q2
+  basis: consolidated
+  metric: eps
+  flag: sign change (profit/loss swing?) - check
+  reason: 'demerger: CV business discontinued, one-time gain'
+- symbol: TMPV
+  quarter: FY26Q2
+  basis: consolidated
+  metric: net_profit
+  flag: 19.4x vs previous quarter (3924)
+  reason: 'demerger: CV business discontinued, one-time gain'
+- symbol: TMPV
+  quarter: FY26Q3
+  basis: standalone
+  metric: net_profit
+  flag: 0.0x vs previous quarter (82081); sign change (profit/loss swing?) - check
+  reason: 'demerger: CV business discontinued, one-time gain'
+- symbol: TMPV
+  quarter: FY26Q3
+  basis: consolidated
+  metric: net_profit
+  flag: 0.0x vs previous quarter (76170); sign change (profit/loss swing?) - check
+  reason: 'demerger: CV business discontinued, one-time gain'
+- symbol: TMPV
+  quarter: FY26Q4
+  basis: standalone
+  metric: eps
+  flag: sign change (profit/loss swing?) - check
+  reason: 'demerger: CV business discontinued, one-time gain'
+- symbol: TMPV
+  quarter: FY26Q4
+  basis: standalone
+  metric: net_profit
+  flag: sign change (profit/loss swing?) - check
+  reason: 'demerger: CV business discontinued, one-time gain'
+- symbol: TMPV
+  quarter: FY26Q4
+  basis: consolidated
+  metric: eps
+  flag: sign change (profit/loss swing?) - check
+  reason: 'demerger: CV business discontinued, one-time gain'
+- symbol: TMPV
+  quarter: FY26Q4
+  basis: consolidated
+  metric: net_profit
+  flag: sign change (profit/loss swing?) - check
+  reason: 'demerger: CV business discontinued, one-time gain'
+- symbol: TMPV
+  quarter: FY27Q1
+  basis: standalone
+  metric: eps
+  flag: 0.2x vs previous quarter (1.24)
+  reason: 'demerger: CV business discontinued, one-time gain'
+- symbol: TMPV
+  quarter: FY27Q1
+  basis: standalone
+  metric: net_profit
+  flag: 0.2x vs previous quarter (455)
+  reason: 'demerger: CV business discontinued, one-time gain'
+- symbol: TMPV
+  quarter: FY27Q1
+  basis: consolidated
+  metric: eps
+  flag: 0.1x vs previous quarter (15.71)
+  reason: 'demerger: CV business discontinued, one-time gain'
+- symbol: TMPV
+  quarter: FY27Q1
+  basis: consolidated
+  metric: net_profit
+  flag: 0.1x vs previous quarter (5783)
+  reason: 'demerger: CV business discontinued, one-time gain'

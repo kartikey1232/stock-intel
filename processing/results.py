@@ -25,7 +25,8 @@ comparatives, so `changes` marks QoQ/YoY that span such a quarter instead of res
 Validation flags a headline value that moves more than 5x (up or down) from the previous
 quarter, or changes sign where that shouldn't happen (revenue, income, NII, NPAs); a
 profit or EPS sign change is flagged for checking. Flags usually mean a unit or parsing
-error, not a real move.
+error, not a real move. A flag reviewed in config/acknowledged_flags.yaml (same key and
+same flag text) gets `flag_reviewed` set to the reason and logs at INFO, not WARNING.
 
 Run with:  uv run python -m processing.results [--report]
 """
@@ -44,6 +45,7 @@ import pandas as pd
 import pdfplumber
 from dateutil import parser as date_parser
 
+from config.acknowledged_flags import AcknowledgedFlag, FlagKey, load_acknowledged_flags
 from config.loader import Stock, load_watchlist
 from storage.db import (
     init_db,
@@ -463,6 +465,7 @@ def build_rows(parsed: list[tuple[str, str, ParsedResult]], now: dt.datetime) ->
                 "filing_id": filing_id,
                 "extracted_at": now,
                 "flag": None,
+                "flag_reviewed": None,
             }
     return list(rows.values())
 
@@ -542,8 +545,14 @@ def changes(results: pd.DataFrame) -> pd.DataFrame:
     return df.sort_values([*key, "period_end"]).reset_index(drop=True)
 
 
-def validate(rows: list[dict]) -> list[dict]:
-    """Set `flag` on headline rows with >5x jumps or unexpected sign changes."""
+def validate(
+    rows: list[dict], acknowledged: dict[FlagKey, AcknowledgedFlag] | None = None
+) -> list[dict]:
+    """Set `flag` on headline rows with >5x jumps or unexpected sign changes.
+
+    `flag_reviewed` gets the acknowledgement's reason when `acknowledged` has the row's
+    (symbol, quarter, basis, metric) with exactly this flag text; otherwise it's None.
+    """
     if not rows:
         return rows
     diff = changes(pd.DataFrame(rows))
@@ -565,7 +574,34 @@ def validate(rows: list[dict]) -> list[dict]:
             flags[(r.symbol, r.period_end, r.basis, r.metric)] = "; ".join(problems)
     for row in rows:
         row["flag"] = flags.get((row["symbol"], row["period_end"], row["basis"], row["metric"]))
+        ack = (acknowledged or {}).get(flag_key(row))
+        row["flag_reviewed"] = ack.reason if ack and row["flag"] == ack.flag else None
     return rows
+
+
+def flag_key(row: dict) -> FlagKey:
+    """(symbol, fiscal quarter, basis, metric): how acknowledgements identify a flag."""
+    return (row["symbol"], row["fiscal_quarter"], row["basis"], row["metric"])
+
+
+def log_flags(rows: list[dict], acknowledged: dict[FlagKey, AcknowledgedFlag]) -> None:
+    """Log flags: reviewed ones at INFO; new, changed or unreviewed ones at WARNING."""
+    for r in rows:
+        if not r["flag"]:
+            continue
+        where = f"{r['symbol']} {r['fiscal_quarter']} {r['basis']} {r['metric']}"
+        ack = acknowledged.get(flag_key(r))
+        if r["flag_reviewed"]:
+            logger.info("%s: %s (reviewed: %s)", where, r["flag"], r["flag_reviewed"])
+        elif ack:
+            logger.warning("%s: %s (flag changed since it was acknowledged as %r)",
+                           where, r["flag"], ack.flag)  # fmt: skip
+        else:
+            logger.warning("%s: %s", where, r["flag"])
+    flagged = {flag_key(r) for r in rows if r["flag"]}
+    for key in sorted(set(acknowledged) - flagged):
+        logger.info("Acknowledged flag %s no longer occurs; its entry can be removed",
+                    " ".join(key))  # fmt: skip
 
 
 def rebuild(stocks: list[Stock]) -> list[dict]:
@@ -589,12 +625,10 @@ def rebuild(stocks: list[Stock]) -> list[dict]:
         if p.kind == "xbrl" and "x:InterestEarned" not in p.values and symbol == "HDFCBANK":
             logger.warning("HDFCBANK XBRL %s has none of the expected bank tags; check "
                            "XBRL_TAGS against the file", p.period_end)  # fmt: skip
-    rows = validate(build_rows(parsed, dt.datetime.now(dt.UTC)))
+    acknowledged = load_acknowledged_flags()
+    rows = validate(build_rows(parsed, dt.datetime.now(dt.UTC)), acknowledged)
     replace_results(rows)
-    for r in rows:
-        if r["flag"]:
-            logger.warning("%s %s %s %s: %s", r["symbol"], r["fiscal_quarter"], r["basis"],
-                           r["metric"], r["flag"])  # fmt: skip
+    log_flags(rows, acknowledged)
     logger.info("Results: %d row(s) from %d file(s)", len(rows), len(files))
     return rows
 
@@ -612,12 +646,19 @@ def joined_notes(diff: pd.DataFrame) -> str:
     return "; ".join(f"{'/'.join(labels)} {note}" for note, labels in notes.items())
 
 
+def flag_mark(row: pd.Series) -> str:
+    """'!' for an unreviewed flag, '~' for a reviewed one, '' for none."""
+    if pd.isna(row["flag"]):
+        return ""
+    return "~" if pd.notna(row.get("flag_reviewed")) else "!"
+
+
 def report(quarters: int = 8) -> pd.DataFrame:
     """Last `quarters` of revenue (or total income for banks) and net profit per stock.
 
     Consolidated where available, else standalone. Values in ₹ crore; '*' marks
-    lower-trust PDF values and '!' flagged ones. `note` says when QoQ/YoY comparisons
-    for that quarter aren't like-for-like (see `changes`).
+    lower-trust PDF values, '!' unreviewed flags and '~' reviewed ones. `note` says when
+    QoQ/YoY comparisons for that quarter aren't like-for-like (see `changes`).
     """
     all_rows = read_results()
     df = all_rows[all_rows["metric"].isin(["revenue", "total_income", "net_profit"])]
@@ -637,7 +678,7 @@ def report(quarters: int = 8) -> pd.DataFrame:
                     row[label] = "-"
                     continue
                 h = hit.iloc[0]
-                marks = ("*" if h["trust"] == "low" else "") + ("!" if pd.notna(h["flag"]) else "")
+                marks = ("*" if h["trust"] == "low" else "") + flag_mark(h)
                 row[label] = f"{h['value']:,.0f}{marks}"
             d = diff[(diff["symbol"] == symbol) & (diff["basis"] == basis)
                      & (diff["fiscal_quarter"] == fq) & (diff["metric"] == top_metric)]  # fmt: skip
@@ -658,7 +699,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.report:
         table = report()
         print("No results yet." if table.empty else table.to_string(index=False))
-        print("\n* = from PDF (lower trust)   ! = validation flag   values in ₹ crore")
+        print("\n* = from PDF (lower trust)   ! = validation flag   ~ = reviewed flag   "
+              "values in ₹ crore")  # fmt: skip
     return 0
 
 

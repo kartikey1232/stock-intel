@@ -210,6 +210,12 @@ uv run streamlit run dashboard.py               # launch the dashboard
   `qoq_note`/`yoy_note` for comparisons that span it (shown in the dashboard and
   `--report`). The demerger's accounting quarter (FY26Q2, to 30 Sep) is earlier than its
   price ex-date (14 Oct), so detect it from the filings, not `corporate_actions.yaml`.
+- Results validation flags can be acknowledged in `config/acknowledged_flags.yaml`, keyed
+  by (symbol, quarter, basis, metric) and pinned to the exact flag text. A match sets
+  `results.flag_reviewed` to the reason, logs at INFO, shows "~" in `--report` and
+  "reviewed: <reason>" in the dashboard. New flags, or changed text for an acknowledged
+  key, still WARN. Acknowledge only after checking the figure against the filing; never
+  add entries to silence a flag you haven't explained.
 - Per-share figures are as reported: HDFC Bank's pre-Aug-2025 EPS and RELIANCE's FY25Q2
   EPS (before its Oct-2024 1:1 bonus) are on the pre-bonus share count and aren't restated.
 - Moneycontrol RSS is frozen (newest items 2024) and Business Standard RSS returns 403 to

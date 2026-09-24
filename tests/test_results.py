@@ -18,6 +18,7 @@ from sqlalchemy import Engine
 import collectors.result_files as rf
 import collectors.results_ir as ir
 import processing.results as res
+from config.acknowledged_flags import AcknowledgedFlag
 from config.loader import load_watchlist
 from storage import db
 
@@ -387,6 +388,39 @@ def test_validation_flags_5x_jumps_and_sign_changes() -> None:
     assert profit["FY26Q4"] is None
 
 
+def ack(quarter: str, flag: str, metric: str = "revenue") -> dict:
+    a = AcknowledgedFlag("INFY", quarter, "standalone", metric, flag, "checked: real move")
+    return {a.key: a}
+
+
+def test_acknowledged_flag_is_reviewed_only_while_its_text_matches() -> None:
+    rows = quarters("revenue", [100, 105, 1050, 1100, 1150])
+    flag = next(r["flag"] for r in res.validate(rows) if r["fiscal_quarter"] == "FY26Q2")
+
+    same = {r["fiscal_quarter"]: r for r in res.validate(rows, ack("FY26Q2", flag))}
+    assert same["FY26Q2"]["flag"] == flag  # the flag stays; it's only marked reviewed
+    assert same["FY26Q2"]["flag_reviewed"] == "checked: real move"
+    assert same["FY25Q4"]["flag_reviewed"] is None
+
+    changed = res.validate(rows, ack("FY26Q2", "9.0x vs previous quarter (105)"))
+    assert all(r["flag_reviewed"] is None for r in changed)
+
+
+def test_reviewed_flags_log_at_info_and_new_or_changed_ones_warn(caplog) -> None:
+    rows = quarters("revenue", [100, 105, 1050, 1100, -1150])
+    flags = {r["fiscal_quarter"]: r["flag"] for r in res.validate(rows)}
+    acks = {**ack("FY26Q2", flags["FY26Q2"]), **ack("FY26Q4", "old text"),
+            **ack("FY25Q4", "gone")}  # fmt: skip
+    rows = res.validate(rows, acks)
+    with caplog.at_level("INFO", logger="processing.results"):
+        res.log_flags(rows, acks)
+    levels = {r.getMessage().split(":")[0]: r.levelname for r in caplog.records}
+    assert levels["INFY FY26Q2 standalone revenue"] == "INFO"  # reviewed
+    assert levels["INFY FY26Q4 standalone revenue"] == "WARNING"  # changed since reviewed
+    assert "changed since it was acknowledged" in caplog.text
+    assert "INFY FY25Q4 standalone revenue no longer occurs" in caplog.text
+
+
 # --- inbox importer ----------------------------------------------------------------
 
 
@@ -544,3 +578,10 @@ def test_report_marks_only_flagged_values(engine: Engine) -> None:
     assert table.loc["FY25Q4", "revenue"] == "100"  # unflagged: no "!"
     assert table.loc["FY26Q2", "revenue"] == "1,050!"  # 10x jump
     assert table.loc["FY26Q2", "note"] == ""
+
+
+def test_report_marks_reviewed_flags_differently(engine: Engine) -> None:
+    rows = quarters("revenue", [100, 105, 1050, 1100, 1150])
+    flag = next(r["flag"] for r in res.validate(rows) if r["fiscal_quarter"] == "FY26Q2")
+    db.replace_results(res.validate(rows, ack("FY26Q2", flag)))
+    assert res.report().set_index("quarter").loc["FY26Q2", "revenue"] == "1,050~"

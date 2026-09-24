@@ -283,6 +283,23 @@ def test_results_table_has_yoy_qoq_and_falls_back_to_total_income() -> None:
     assert dashboard.results_table(rows, "standalone").empty
 
 
+def test_results_table_shows_reviewed_flags_as_reviewed() -> None:
+    rows = result_rows({"revenue": [100, 110, 120, 130, 150], "net_profit": [10, 11, 12, 13, 99]})
+    rows["flag_reviewed"] = None
+    last = rows["period_end"] == rows["period_end"].max()
+    rows.loc[last & (rows["metric"] == "net_profit"), ["flag", "flag_reviewed"]] = [
+        "7.6x vs previous quarter (13)", "demerger gain"]  # fmt: skip
+    rows.loc[last & (rows["metric"] == "revenue"), "flag"] = "new flag"
+    flags = dashboard.results_table(rows, "consolidated").iloc[-1]["flags"]
+    assert flags == "new flag; reviewed: demerger gain"
+    assert (
+        dashboard.results_table(rows.drop(columns="flag_reviewed"), "consolidated").iloc[-1][
+            "flags"
+        ]
+        == "7.6x vs previous quarter (13); new flag"
+    )  # older database without the column
+
+
 def test_results_figure_has_bars_and_yoy_lines() -> None:
     table = dashboard.results_table(
         result_rows(
