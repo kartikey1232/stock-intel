@@ -3,7 +3,7 @@
 Where the project stands, what was decided and why, and what to do next. Read this with
 `CLAUDE.md` (rules, commands, gotchas) and `README.md` (usage) when resuming work.
 
-Last updated: 2026-09-24 (ValuePickr collector commit, after `4a49eb5`).
+Last updated: 2026-09-24 (after the first ValuePickr run; own-thread boost commit, after `9d826a4`).
 
 ## Status at a glance
 
@@ -12,11 +12,11 @@ Last updated: 2026-09-24 (ValuePickr collector commit, after `4a49eb5`).
 | 1 | Prices + technical indicators | Done |
 | 2 | News + sentiment | Done |
 | 3 | NSE/BSE filings (quarterly results) | Done: all 80 XBRL files (8 quarters × standalone/consolidated × 5 stocks) imported by hand; flags reviewed |
-| 4 | Social media signals | ValuePickr collector built and tested, topic IDs confirmed, not yet run (needs `SOCIAL_HASH_KEY`); Reddit awaits API approval |
+| 4 | Social media signals | ValuePickr collecting (4 dedicated topics, first run 2026-09-24); Reddit awaits API approval |
 | 5 | Signals & backtesting | Not started |
 | 6 | Scheduling, digests, Telegram alerts | Scheduling + macOS failure notifications done; digests and Telegram not started |
 
-- Tests: 369 passing (`uv run pytest`), ruff clean.
+- Tests: 372 passing (`uv run pytest`), ruff clean.
 - Watchlist (`config/watchlist.yaml`): RELIANCE, TCS, HDFCBANK, INFY, TMPV.
 - Git: `main`, no remote pushes made from these sessions. `PROGRESS.md` is tracked.
 
@@ -49,7 +49,9 @@ not in git.
 | `c3fbb86` | QoQ/YoY notes across discontinued operations (TMPV demerger); fixed `--report` flag marker |
 | `5865308` | XBRL contexts use each context's declared reporting period (pre-2025 files mislabel the year-to-date context); HDFC Bank IR terms documented |
 | `4a49eb5` | `config/acknowledged_flags.yaml`: reviewed flags log at INFO and show as reviewed; PROGRESS.md tracked |
-| (next) | Phase 4: ValuePickr collector, social linking/sentiment/`social_daily`, dashboard Social tab, `--skip-social`, principles 8–9 |
+| `4f522d2` | Phase 4: ValuePickr collector, social linking/sentiment/`social_daily`, dashboard Social tab, `--skip-social`, principles 8–9 |
+| `9d826a4` | ValuePickr topics confirmed; "Market news and updates" (133414) dropped |
+| (next) | Own-thread conditional boost (0.6); discovery and skipped-post logging |
 
 ## Decisions and findings worth remembering
 
@@ -141,8 +143,20 @@ not in git.
   "Market news and updates" (133414) was dropped: no posts since February 2024. General
   discussion comes only from /latest.json topics. TCS has no dedicated thread; it relies
   on the linker in discovered topics.
-- A single bare "Tata Motors" in a PV sentence after the demerger scores 0.45 and doesn't
-  link (existing linker rule); posts naming JLR/TMPV do.
+- A single bare "Tata Motors" in a PV sentence after the demerger scored 0.45 and didn't
+  link; in TMPV's own topic such a match now scores 0.6 (`OWN_THREAD_CONDITIONAL`).
+- First ValuePickr run (2026-09-24, by the user): 195/167/177/173 posts for
+  24141/32873/8124/1233, the newest 200 post ids per topic (`backfill_posts`); 5-33 per
+  topic weren't stored (reason unknown for this run: logging added afterwards). Stored
+  ranges: HDFCBANK #732-952 (Feb 2024-Sep 2026), RELIANCE #189-407 (Jan 2021-Aug 2026),
+  INFY #121-332 (Sep 2018-Sep 2025), TMPV #384-597 (Nov 2022-Feb 2026). The /latest.json
+  step ran but matched nothing and logged nothing (now logged).
+- Processing: 712 posts, 706 linked (all scored), 326 social_daily rows from 2018-09-14
+  to 2026-09-04. Only 8 posts in 1233 are post-demerger: 2 link via JLR/TMPV names, 6
+  don't (CV talk or no company named); the new boost didn't change any of them.
+- FinBERT on forum text: about 70% of posts score neutral; short replies ("Totally
+  agreed.") and pasted headlines get scored as they are. Linked news headlines inside posts
+  stay in the text (link text isn't stripped).
 
 ## Open items / next steps
 
@@ -157,8 +171,8 @@ not in git.
    warn.
 5. Optional: show provisions (and NII/NPA for banks) on the dashboard; they're already
    extracted.
-6. Phase 4: add `SOCIAL_HASH_KEY` to `.env` (topic IDs are confirmed), then run
-   `collectors.valuepickr` once by hand and check the log. Apply for Reddit API access if
+6. Phase 4: check the next ValuePickr run's log for the skipped-post reasons and the
+   /latest.json line. Apply for Reddit API access if
    wanted (see README). Phase 5 backtests must filter news and social posts on
    `first_seen_at` and results on `filed_at`, and treat social data as
    survivorship-biased (deleted posts are purged).

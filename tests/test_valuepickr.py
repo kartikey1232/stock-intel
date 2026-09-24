@@ -313,3 +313,26 @@ def test_latest_topics_naming_a_stock_are_discovered(engine: Engine, forum) -> N
     forum.requests.clear()
     run(forum, config(recheck_posts=0))  # no new posts in topic 20: not fetched again
     assert "/t/20.json" not in forum.paths()
+
+
+def test_discovery_always_logs_what_it_checked(engine: Engine, forum, caplog) -> None:
+    forum.latest = [{"id": 21, "title": "Random chat", "highest_post_number": 5}]
+    with caplog.at_level("INFO", logger="collectors.valuepickr"):
+        run(forum, config(recheck_posts=0))
+    assert "/latest.json: 1 topic(s) checked, 0 title(s) name a watchlist stock, 0 with new" in (
+        caplog.text
+    )
+
+
+def test_skipped_posts_are_counted_by_reason(engine: Engine, forum, caplog) -> None:
+    posts = forum.topics[10]["posts"]
+    posts[29]["post_type"] = 3  # a "closed" notice
+    posts[28]["cooked"] = '<aside class="quote"><blockquote>only a quote</blockquote></aside>'
+    posts[27]["user_deleted"] = True
+    with caplog.at_level("INFO", logger="collectors.valuepickr"):
+        result = run(forum, config(recheck_posts=0))
+    assert result.topics[0].new == 22
+    assert (
+        "25 post(s) requested, 3 not stored: {'deleted or hidden': 1, "
+        "'no text after cleaning': 1, 'not a regular post': 1}"
+    ) in caplog.text

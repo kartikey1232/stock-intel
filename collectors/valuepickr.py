@@ -34,6 +34,7 @@ import os
 import re
 import sys
 import time
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -181,6 +182,19 @@ def post_key(platform_post_id: str | int) -> str:
     return f"{PLATFORM}:{platform_post_id}"
 
 
+def skip_reason(post: dict[str, Any]) -> str | None:
+    """Why a post won't be stored, or None if it will."""
+    if post.get("post_type", REGULAR_POST) != REGULAR_POST:
+        return "not a regular post"  # moderator notes, "closed"/"moved" small actions
+    if is_removed(post):
+        return "deleted or hidden"
+    if not post.get("created_at"):
+        return "no created_at"
+    if clean_cooked(post.get("cooked")) is None:
+        return "no text after cleaning"  # only quotes, images, links previews or code
+    return None
+
+
 def parse_post(
     post: dict[str, Any],
     topic_id: int,
@@ -190,11 +204,9 @@ def parse_post(
     now: dt.datetime,
 ) -> dict[str, Any] | None:
     """A social_posts row for one Discourse post, or None if it isn't a live regular post."""
-    if post.get("post_type", REGULAR_POST) != REGULAR_POST or is_removed(post):
+    if skip_reason(post):
         return None
     text = clean_cooked(post.get("cooked"))
-    if text is None or not post.get("created_at"):
-        return None
     number = post.get("post_number")
     return {
         "id": post_key(post["id"]),
@@ -356,6 +368,12 @@ def collect_topic(
         if (row := parse_post(post, topic_id, slug, forum.config.base_url, key, now))
     ]
     result.new = insert_new_posts(rows)
+    skipped = Counter(reason for post in posts if (reason := skip_reason(post)))
+    if len(posts) < len(wanted):
+        skipped["not returned by the forum"] = len(wanted) - len(posts)
+    if skipped:
+        logger.info("Topic %s: %d post(s) requested, %d not stored: %s", topic_id,
+                    len(wanted), sum(skipped.values()), dict(skipped))  # fmt: skip
     last_id = max(wanted, default=known["last_post_id"] if known else None)
     numbers = [p["post_number"] for p in posts if p.get("post_number")]
     upsert_topic(
@@ -380,7 +398,7 @@ def discover_topics(forum: Forum, stocks: list[Stock]) -> list[int]:
     and with posts newer than the last one we fetched."""
     config = forum.config
     topics = forum.get_json("/latest.json")["topic_list"]["topics"]
-    picked = []
+    matched, picked = [], []
     for topic in topics:
         if config.topic(topic["id"]) or topic.get("pinned"):
             continue
@@ -388,12 +406,17 @@ def discover_topics(forum: Forum, stocks: list[Stock]) -> list[int]:
             continue
         if not title_names_stock(topic.get("title") or "", stocks):
             continue
+        matched.append(topic["id"])
         known = read_topic(PLATFORM, str(topic["id"]))
         highest = topic.get("highest_post_number")
         if known and known["last_post_number"] and highest and highest <= known["last_post_number"]:
             continue
         picked.append(topic["id"])
-    return picked[: config.latest_max_topics]
+    picked = picked[: config.latest_max_topics]
+    logger.info("/latest.json: %d topic(s) checked, %d title(s) name a watchlist stock, "
+                "%d with new posts to fetch %s", len(topics), len(matched), len(picked),
+                picked)  # fmt: skip
+    return picked
 
 
 def recheck_posts(forum: Forum, now: dt.datetime) -> tuple[int, int, int]:

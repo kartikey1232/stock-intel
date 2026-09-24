@@ -4,7 +4,10 @@ Linking. A post in a stock's dedicated topic (config/social_sources.yaml) links 
 stock with confidence THREAD_CONFIDENCE, without the entity linker. A dedicated topic with
 `default_until` (TMPV's Tata Motors thread, 2025-10-14) only does this for posts created
 before that IST date; later posts go through the entity linker, whose conditional
-"Tata Motors" rule then applies. Posts in general topics (configured without a stock, or
+"Tata Motors" rule then applies. In the stock's own topic, a conditional match that
+satisfies its context scores at least OWN_THREAD_CONDITIONAL (0.6), since a single such
+mention would otherwise score 0.45, below the link threshold, like a passing mention in
+a long news body. Posts in general topics (configured without a stock, or
 discovered via /latest.json) always go through the entity linker, on the post text only.
 
 Scoring. As for news: only the sentences that mention the stock (at most
@@ -62,6 +65,9 @@ logger = logging.getLogger(__name__)
 
 IST = ZoneInfo("Asia/Kolkata")
 VALUEPICKR = "valuepickr"
+# In a stock's own dedicated topic (past its default_until), a conditional-alias match
+# that met its context rule ("Tata Motors" + a PV term) is about that stock.
+OWN_THREAD_CONDITIONAL = 0.6
 
 
 def post_date(created_at: Any) -> dt.date:
@@ -86,7 +92,7 @@ def link_post(
     if symbol:
         return [{"symbol": symbol, "method": "thread", "matched_alias": None,
                  "confidence": THREAD_CONFIDENCE}]  # fmt: skip
-    return [
+    mentions = [
         {
             "symbol": m["symbol"],
             "method": "linker",
@@ -95,6 +101,18 @@ def link_post(
         }
         for m in link_article("", None, text, created, matchers)
     ]
+    own = topic.symbol if topic else None
+    own_matcher = next((m for m in matchers if m.symbol == own), None)
+    for mention in mentions:
+        if mention["symbol"] == own and own_matcher and _conditional_match(own_matcher, text,
+                                                                           created):  # fmt: skip
+            mention["confidence"] = max(mention["confidence"], OWN_THREAD_CONDITIONAL)
+    return mentions
+
+
+def _conditional_match(matcher: StockMatcher, text: str | None, created: dt.date) -> bool:
+    """True if `text` names the stock by a conditional alias that met its context rule."""
+    return any(name.kind == "conditional" for name, *_ in matcher.matches(text or "", created))
 
 
 def link(stocks: list[Stock], config: ValuePickrConfig, full: bool = False) -> int:

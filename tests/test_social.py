@@ -84,10 +84,23 @@ def test_tata_motors_thread_defaults_to_tmpv_only_before_the_demerger() -> None:
                   dt.date(2025, 10, 20))  # fmt: skip
     assert after["TMPV"]["method"] == "linker"
     assert after["TMPV"]["confidence"] >= 0.5
-    # One conditional "Tata Motors" mention in a PV sentence is stored, but like a single
-    # passing mention in a news body it scores below the 0.5 link threshold.
-    weak = links(1233, "Tata Motors Nexon EV sales beat estimates.", dt.date(2025, 10, 20))
-    assert weak["TMPV"]["confidence"] == pytest.approx(0.45)
+
+
+def test_own_thread_conditional_match_is_boosted_to_link() -> None:
+    # Post-demerger PV sentence in TMPV's own thread: one conditional "Tata Motors" match
+    # (0.45 on its own) is lifted to 0.6, so it links.
+    pv = "Tata Motors Nexon EV sales beat estimates."
+    own = links(1233, pv, dt.date(2025, 10, 20))
+    assert own["TMPV"] == {"symbol": "TMPV", "method": "linker",
+                           "matched_alias": "Tata Motors", "confidence": 0.6}  # fmt: skip
+    # The same sentence elsewhere keeps the linker's score; the CV sense still never links.
+    assert links(DISCOVERED, pv, dt.date(2025, 10, 20))["TMPV"]["confidence"] == (
+        pytest.approx(0.45)
+    )
+    assert links(1233, "Tata Motors truck volumes rose.", dt.date(2025, 10, 20)) == {}
+    # A strong-alias match isn't lowered or changed by the boost.
+    jlr = links(1233, "JLR margins improved. JLR volumes too. JLR again.", dt.date(2025, 10, 20))
+    assert jlr["TMPV"]["confidence"] == pytest.approx(0.7)
 
 
 def test_discovered_topic_posts_go_through_the_entity_linker() -> None:

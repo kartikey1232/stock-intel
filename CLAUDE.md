@@ -240,8 +240,12 @@ uv run streamlit run dashboard.py               # launch the dashboard
   (other people's words and names). Posts in a stock's dedicated topic link with
   confidence 0.9 (`method = thread`); general and discovered topics use the entity
   linker on the post text. TMPV's topic 1233 defaults to TMPV only for posts before
-  2025-10-14; after that a single bare "Tata Motors" in a PV sentence scores 0.45 (below
-  the link threshold, like a single conditional mention in a news body).
+  2025-10-14; after that the linker decides, but in a stock's own topic a conditional
+  alias that meets its context ("Tata Motors" + a PV term) scores at least 0.6
+  (`OWN_THREAD_CONDITIONAL`); elsewhere one such mention scores 0.45 and doesn't link.
+- Social collector logs: every run logs how many /latest.json topics were checked and
+  matched (even 0), and per topic how many requested posts weren't stored and why (not
+  a regular post, deleted/hidden, no text after cleaning, not returned).
 - `social_daily` counts linked posts and distinct `author_hmac`s per IST session (same
   session rules as news_daily); mean/weighted scores cover scored posts only and are
   NULL when none were scored. The dashboard's Social tab shows counts, scores and links,
