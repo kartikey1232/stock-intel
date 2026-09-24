@@ -269,7 +269,10 @@ What is stored: post id, topic, post number, link, creation time, text (quotes o
 posts, @mentions, code and images removed), like count, and a keyed hash of the author's
 numeric id (to count distinct authors). **No usernames, names, avatars or profile links.**
 Posts deleted or hidden on ValuePickr are deleted here, with their derived rows, and
-edited posts are re-scored. The collector sends an honest User-Agent, makes one request
+posts ValuePickr reports as edited (its own version number) are re-scored. A
+privacy-stripped copy of each post's HTML is kept, so changed cleaning rules are
+re-applied locally with `uv run python -m collectors.valuepickr --reclean` instead of
+being mistaken for edits. The collector sends an honest User-Agent, makes one request
 every 5 seconds, and stops if the forum keeps answering HTTP 429.
 
 Only a post's own words are scored: link text, URLs and pasted news headlines are

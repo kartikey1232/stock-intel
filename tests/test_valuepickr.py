@@ -49,6 +49,8 @@ def post(pid: int, number: int, text: str | None = None, **extra) -> dict:
         "name": f"Real Name {number}",
         "avatar_template": "/user_avatar/x.png",
         "actions_summary": [{"id": 2, "count": number % 4}],
+        "version": 1,
+        "updated_at": "2026-09-20T05:00:00.000Z",
         **extra,
     }
 
@@ -291,7 +293,8 @@ def test_robots_disallow_is_honoured(engine: Engine, forum) -> None:
 def test_recheck_deletes_removed_posts_and_updates_edited_text(engine: Engine, forum) -> None:
     run(forum, config(backfill_posts=3))  # posts 28-30
     posts = forum.topics[10]["posts"]
-    posts[27]["cooked"] = "<p>Edited: Infosys guidance cut.</p>"  # post 28
+    posts[27]["cooked"] = "<p>Edited: Infosys guidance cut.</p>"  # post 28, a real edit:
+    posts[27]["version"] = 2  # Discourse bumps the version
     posts[28]["user_deleted"] = True  # post 29
     posts[29]["_gone"] = True  # post 30: gone entirely
     with engine.begin() as conn:
@@ -303,6 +306,74 @@ def test_recheck_deletes_removed_posts_and_updates_edited_text(engine: Engine, f
     assert rows[0]["text"] == "Edited: Infosys guidance cut."
     assert rows[0]["linked_at"] is None  # re-linked next time
     assert result.recheck_deleted == 1 and result.recheck_edited == 1  # 30 left the stream
+    assert result.recheck_recleaned == 0 and rows[0]["version"] == 2
+
+
+def rechecked_once(engine: Engine, forum, change) -> tuple[vp.RunResult, list[dict]]:
+    """Store posts 28-30, apply `change` to the forum, run again and re-check them."""
+    run(forum, config(backfill_posts=3))
+    change(forum.topics[10]["posts"])
+    return run(forum, config(backfill_posts=3)), stored(engine)
+
+
+def test_a_cleaning_rule_change_is_not_an_edit(engine: Engine, forum, monkeypatch) -> None:
+    def new_rules(posts):  # our rules change; nothing changes on the forum
+        monkeypatch.setattr(vp, "extract_text", lambda raw: "cleaned differently now")
+
+    result, rows = rechecked_once(engine, forum, new_rules)
+    assert (result.recheck_edited, result.recheck_recleaned) == (0, 3)
+    assert {r["text"] for r in rows} == {"cleaned differently now"}
+    assert all(r["linked_at"] is None for r in rows)  # re-linked, but not an edit
+
+
+def test_updated_at_is_the_fallback_edit_marker(engine: Engine, forum) -> None:
+    def edit_without_versions(posts):
+        for p in posts:
+            p.pop("version")
+        posts[29]["cooked"] = "<p>Changed later.</p>"
+        posts[29]["updated_at"] = "2026-09-23T05:00:00.000Z"
+
+    result, _ = rechecked_once(engine, forum, edit_without_versions)
+    assert (result.recheck_edited, result.recheck_recleaned) == (1, 0)
+
+
+def test_posts_stored_before_edit_markers_existed_are_not_counted_as_edits(
+    engine: Engine, forum
+) -> None:
+    def legacy(posts):
+        with engine.begin() as conn:  # as stored before raw_html/version/updated_at existed
+            legacy_values = {"raw_html": None, "version": None, "platform_updated_at": None,
+                             "text": "old cleaning"}  # fmt: skip
+            conn.execute(db.SOCIAL_POSTS.update().values(**legacy_values))
+
+    result, rows = rechecked_once(engine, forum, legacy)
+    assert (result.recheck_edited, result.recheck_recleaned) == (0, 3)
+    assert all(r["raw_html"] and r["version"] == 1 for r in rows)  # filled in now
+
+
+def test_raw_html_keeps_structure_but_no_identities_or_urls() -> None:
+    cooked = (
+        '<aside class="quote" data-username="alice" data-post="3"><blockquote><p>Hi</p>'
+        '</blockquote></aside><p>See <a href="https://x.com/u/bob?ref=bob" class="mention">@bob'
+        '</a> and <a href="https://news.example.com/a" title="t">this note</a>'
+        '<img src="/user_avatar/forum/carol/48/1.png" class="avatar"></p>'
+        '<aside class="onebox" data-onebox-src="https://y.com"><p>Preview</p></aside>'
+    )
+    raw = vp.sanitize_cooked(cooked)
+    for leaked in ("alice", "bob", "carol", "href", "src", "data-", "title="):
+        assert leaked not in raw
+    assert '<aside class="onebox">' in raw  # kept, so text rules can be re-applied later
+    assert vp.extract_text(raw) == "See and \u27e6this note\u27e7"
+
+
+def test_reclean_is_local_and_not_an_edit(engine: Engine, forum, monkeypatch) -> None:
+    run(forum, config(backfill_posts=3))
+    requests_before = len(forum.requests)
+    monkeypatch.setattr(vp, "extract_text", lambda raw: "new rules")
+    assert vp.reclean_stored() == 3
+    assert len(forum.requests) == requests_before  # no network
+    assert {r["text"] for r in stored(engine)} == {"new rules"}
+    assert vp.reclean_stored() == 0
 
 
 def test_latest_topics_naming_a_stock_are_discovered(engine: Engine, forum) -> None:

@@ -11,7 +11,11 @@ belong in processing/social.py. Per run:
 3. /latest.json: topics whose title names a watchlist stock (its news search terms, as
    for the Google News query) are fetched the same way, as "discovered" topics.
 4. Deletion sync: the `recheck_posts` least recently checked posts are re-fetched;
-   missing, deleted, withdrawn or hidden ones are deleted, edited ones get the new text.
+   missing, deleted, withdrawn or hidden ones are deleted. An edit is only what Discourse
+   reports (a higher post `version`, else a later `updated_at`), never a difference in
+   our cleaned text: text that changes only because our cleaning rules changed is
+   counted as "re-cleaned". After changing the rules, `--reclean` re-applies them to the
+   stored raw_html locally.
 
 Privacy (see CLAUDE.md): no usernames, display names, avatars or profile links are stored.
 The author is kept only as an HMAC of Discourse's numeric user id, keyed with
@@ -23,9 +27,10 @@ with backoff for network errors and 5xx, and HTTP 429 handled by waiting Retry-A
 (if short enough) and otherwise stopping the run. Nothing is requested until
 `confirmed: true` is set in config/social_sources.yaml.
 
-Run with:  uv run python -m collectors.valuepickr
+Run with:  uv run python -m collectors.valuepickr [--reclean]
 """
 
+import argparse
 import datetime as dt
 import hashlib
 import hmac
@@ -43,6 +48,7 @@ from urllib.robotparser import RobotFileParser
 
 import httpx
 import lxml.html
+import pandas as pd
 from dotenv import load_dotenv
 
 from config.loader import Stock, load_watchlist
@@ -55,6 +61,7 @@ from storage.social import (
     posts_to_recheck,
     read_topic,
     stored_posts,
+    stored_raw_posts,
     topic_post_ids,
     upsert_topic,
 )
@@ -70,11 +77,17 @@ POSTS_PER_REQUEST = 20  # Discourse's post_ids[] batch size
 REGULAR_POST = 1  # Discourse post_type; others are moderator notes and "small actions"
 GONE_STATUSES = (403, 404, 410)  # topic deleted or made private
 WITHDRAWN_RE = re.compile(r"^\(post (?:deleted|withdrawn) by author", re.IGNORECASE)
-# Other people's words and identities: quotes, onebox previews, @mentions, code, images.
-STRIP_XPATH = (
-    "//aside | //blockquote | //pre | //code | //img | //svg"
+# Removed before anything is stored (raw_html too): other people's words and identities
+# (quotes, @mentions, anything carrying a username) and images (avatars, uploads).
+PRIVACY_XPATH = (
+    "//aside[contains(concat(' ', @class, ' '), ' quote ')] | //*[@data-username]"
     " | //a[contains(concat(' ', @class, ' '), ' mention ')]"
-    " | //a[contains(concat(' ', @class, ' '), ' mention-group ')]"
+    " | //a[contains(concat(' ', @class, ' '), ' mention-group ')] | //img | //svg"
+)
+KEPT_ATTRIBUTES = {"class"}  # everything else (href, src, data-*, title) is dropped
+# Not part of the poster's text: link previews, other quotes, code, image wrappers, polls.
+TEXT_XPATH = (
+    "//aside | //blockquote | //pre | //code"
     " | //div[contains(@class, 'lightbox-wrapper')] | //div[contains(@class, 'poll')]"
 )
 BLOCK_TAGS = ("p", "li", "h1", "h2", "h3", "h4", "h5", "h6", "div", "tr", "br", "hr")
@@ -121,6 +134,7 @@ class RunResult:
     rechecked: int = 0
     recheck_deleted: int = 0
     recheck_edited: int = 0
+    recheck_recleaned: int = 0
     aborted: str | None = None
     skipped: str | None = None
 
@@ -134,16 +148,33 @@ class RunResult:
 # --- parsing -----------------------------------------------------------------------
 
 
-def clean_cooked(cooked: str | None) -> str | None:
-    """Plain text of a post's rendered HTML, without quotes, mentions, code or images.
-
-    Link text is kept but wrapped in LINK_OPEN/LINK_CLOSE, so processing can tell the
-    poster's own words from pasted links and link titles.
-    """
+def sanitize_cooked(cooked: str | None) -> str | None:
+    """A post's rendered HTML with PRIVACY_XPATH elements and all attributes except
+    `class` removed. This is what's stored as raw_html."""
     if not cooked or not cooked.strip():
         return None
     root = lxml.html.fragment_fromstring(cooked, create_parent="div")
-    for element in root.xpath(STRIP_XPATH):
+    for element in root.xpath(PRIVACY_XPATH):
+        element.drop_tree()
+    for element in root.iter():
+        for name in [a for a in element.attrib if a not in KEPT_ATTRIBUTES]:
+            del element.attrib[name]
+    html = lxml.html.tostring(root, encoding="unicode")
+    return html.removeprefix("<div>").removesuffix("</div>") or None
+
+
+def extract_text(raw_html: str | None) -> str | None:
+    """The poster's text from sanitised HTML: no previews, quotes, code or polls. Link text
+    is kept but wrapped in LINK_OPEN/LINK_CLOSE, so processing can tell the poster's own
+    words from pasted links and link titles.
+
+    These are our cleaning rules: after changing them, re-apply them to stored posts with
+    `collectors.valuepickr --reclean` (local, not an edit).
+    """
+    if not raw_html or not raw_html.strip():
+        return None
+    root = lxml.html.fragment_fromstring(raw_html, create_parent="div")
+    for element in root.xpath(TEXT_XPATH):
         element.drop_tree()
     for link in list(root.iter("a")):
         label = SPACE_RE.sub(" ", link.text_content()).strip()
@@ -154,6 +185,34 @@ def clean_cooked(cooked: str | None) -> str | None:
     lines = (SPACE_RE.sub(" ", line).strip() for line in root.text_content().splitlines())
     text = "\n".join(line for line in lines if line)
     return text or None
+
+
+def clean_cooked(cooked: str | None) -> str | None:
+    """Plain text of a post's rendered HTML: extract_text(sanitize_cooked(cooked))."""
+    return extract_text(sanitize_cooked(cooked))
+
+
+def edit_markers(post: dict[str, Any]) -> tuple[int | None, dt.datetime | None]:
+    """Discourse's own edit markers for a post: (version, updated_at)."""
+    version = post.get("version")
+    updated = post.get("updated_at")
+    return (
+        version if isinstance(version, int) else None,
+        parse_time(updated) if isinstance(updated, str) else None,
+    )
+
+
+def is_edited(
+    post: dict[str, Any], stored_version: int | None, stored_updated: dt.datetime | None
+) -> bool:
+    """True if Discourse says the post changed since we stored it: a higher `version`, or
+    (when versions aren't available) a later `updated_at`. Never inferred from our text."""
+    version, updated = edit_markers(post)
+    if version is not None and stored_version is not None:
+        return version > stored_version
+    if updated is not None and stored_updated is not None:
+        return updated > stored_updated
+    return False
 
 
 def is_removed(post: dict[str, Any]) -> bool:
@@ -215,7 +274,8 @@ def parse_post(
     """A social_posts row for one Discourse post, or None if it isn't a live regular post."""
     if skip_reason(post):
         return None
-    text = clean_cooked(post.get("cooked"))
+    raw_html = sanitize_cooked(post.get("cooked"))
+    version, updated = edit_markers(post)
     number = post.get("post_number")
     return {
         "id": post_key(post["id"]),
@@ -224,7 +284,10 @@ def parse_post(
         "platform_post_id": str(post["id"]),
         "post_number": number,
         "url": f"{base_url}/t/{slug}/{topic_id}/{number}",
-        "text": text,
+        "text": extract_text(raw_html),
+        "raw_html": raw_html,
+        "version": version,
+        "platform_updated_at": updated,
         "author_hmac": author_hash(key, post.get("user_id")),
         "likes": like_count(post),
         "created_at": parse_time(post["created_at"]),
@@ -428,33 +491,83 @@ def discover_topics(forum: Forum, stocks: list[Stock]) -> list[int]:
     return picked
 
 
-def recheck_posts(forum: Forum, now: dt.datetime) -> tuple[int, int, int]:
-    """Re-fetch the least recently checked posts. Returns (checked, deleted, edited)."""
+@dataclass
+class RecheckCounts:
+    """Outcome of one deletion-sync pass."""
+
+    checked: int = 0
+    deleted: int = 0
+    edited: int = 0  # Discourse's version/updated_at says the post changed
+    recleaned: int = 0  # unedited, but our cleaning rules now give different text
+
+
+def recheck_update(post: dict[str, Any], stored: Any) -> tuple[str, dict[str, Any]]:
+    """("edited" | "recleaned" | "unchanged", columns to update) for a re-fetched live post.
+
+    An edit is only what Discourse reports (see is_edited). Otherwise raw_html and the edit
+    markers are refreshed (posts stored before those columns existed get them now), and
+    text differing only because our cleaning rules changed counts as "recleaned".
+    """
+    raw_html = sanitize_cooked(post.get("cooked"))
+    version, updated = edit_markers(post)
+    stored_updated = stored.platform_updated_at
+    stored_updated = (
+        None if pd.isna(stored_updated) else pd.Timestamp(stored_updated).to_pydatetime()
+    )
+    stored_version = None if pd.isna(stored.version) else int(stored.version)
+    values: dict[str, Any] = {"raw_html": raw_html, "version": version,
+                              "platform_updated_at": updated}  # fmt: skip
+    text = extract_text(raw_html)
+    if text != stored.text:
+        values["text"] = text
+    if is_edited(post, stored_version, stored_updated):
+        return "edited", values
+    return ("recleaned" if "text" in values else "unchanged"), values
+
+
+def recheck_posts(forum: Forum, now: dt.datetime) -> RecheckCounts:
+    """Re-fetch the least recently checked posts: delete removed ones, refresh the rest."""
     due = posts_to_recheck(PLATFORM, forum.config.recheck_posts)
-    checked, deleted, edited = 0, 0, 0
+    counts = RecheckCounts()
     for topic_id, group in due.groupby("topic_id"):
-        stored_text = dict(zip(group["platform_post_id"], group["text"], strict=True))
-        for batch in chunked(list(stored_text), POSTS_PER_REQUEST):
+        stored = {r.platform_post_id: r for r in group.itertuples(index=False)}
+        for batch in chunked(list(stored), POSTS_PER_REQUEST):
             try:
                 data = forum.get_json(posts_path(topic_id, batch))
             except httpx.HTTPStatusError as exc:
                 if exc.response.status_code not in GONE_STATUSES:
                     raise
-                deleted += forget_topic(topic_id)
+                counts.deleted += forget_topic(topic_id)
                 break
             returned = {str(p["id"]): p for p in data["post_stream"]["posts"]}
             removed = [pid for pid in batch if pid not in returned or is_removed(returned[pid])]
-            deleted += delete_posts([post_key(pid) for pid in removed]) if removed else 0
+            counts.deleted += delete_posts([post_key(pid) for pid in removed]) if removed else 0
             alive = [pid for pid in batch if pid not in removed]
-            texts = {
-                post_key(pid): text
-                for pid in alive
-                if (text := clean_cooked(returned[pid].get("cooked"))) != stored_text[pid]
-            }
-            mark_checked([post_key(pid) for pid in alive], now, texts)
-            checked += len(batch)
-            edited += len(texts)
-    return checked, deleted, edited
+            updates = {}
+            for pid in alive:
+                outcome, values = recheck_update(returned[pid], stored[pid])
+                updates[post_key(pid)] = values
+                counts.edited += outcome == "edited"
+                counts.recleaned += outcome == "recleaned"
+            mark_checked([post_key(pid) for pid in alive], now, updates)
+            counts.checked += len(batch)
+    return counts
+
+
+def reclean_stored() -> int:
+    """Re-apply extract_text to every stored raw_html locally (no network). Posts whose text
+    changes get the new text and are re-linked; none of this counts as an edit. Returns
+    posts changed. Posts stored before raw_html existed get it on their next re-check."""
+    stored = stored_raw_posts(PLATFORM)
+    updates = {
+        r.id: {"text": text}
+        for r in stored.itertuples(index=False)
+        if (text := extract_text(r.raw_html)) != r.text
+    }
+    if updates:
+        mark_checked([], dt.datetime.now(dt.UTC), updates)
+    logger.info("Re-cleaned %d of %d stored post(s) with raw HTML", len(updates), len(stored))
+    return len(updates)
 
 
 def describe(exc: Exception) -> str:
@@ -520,7 +633,9 @@ def collect_all(
             except Exception as exc:
                 logger.exception("Topic %s failed", topic_id)
                 result.topics.append(TopicResult(topic_id, role, error=describe(exc)))
-        result.rechecked, result.recheck_deleted, result.recheck_edited = recheck_posts(forum, now)
+        counts = recheck_posts(forum, now)
+        result.rechecked, result.recheck_deleted = counts.checked, counts.deleted
+        result.recheck_edited, result.recheck_recleaned = counts.edited, counts.recleaned
     except RunAbortedError as exc:
         result.aborted = str(exc)
         logger.error("ValuePickr run stopped: %s", exc)
@@ -540,16 +655,31 @@ def log_summary(result: RunResult) -> None:
     for t in result.topics:
         status = f"FAILED {t.error}" if t.error else f"{t.new} new, {t.deleted} deleted"
         logger.info("valuepickr topic %-8s %-10s %s", t.topic_id, t.role, status)
-    logger.info("Deletion sync: %d post(s) re-checked, %d deleted, %d edited",
-                result.rechecked, result.recheck_deleted, result.recheck_edited)  # fmt: skip
+    logger.info(
+        "Deletion sync: %d post(s) re-checked, %d deleted, %d edited (per Discourse's version), "
+        "%d re-cleaned (our cleaning rules changed; not edits)",
+        result.rechecked,
+        result.recheck_deleted,
+        result.recheck_edited,
+        result.recheck_recleaned,
+    )
     for failure in result.failures:
         logger.error("FAILED %s", failure)
 
 
-def main() -> int:
-    """Entry point: one ValuePickr collection pass. Exit code 1 on any failure."""
+def main(argv: list[str] | None = None) -> int:
+    """Entry point: one ValuePickr collection pass, or --reclean (local, no network).
+    Exit code 1 on any failure."""
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--reclean", action="store_true", help="re-apply cleaning rules to stored raw HTML"
+    )
+    args = parser.parse_args(argv)
     setup_logging()
     init_db()
+    if args.reclean:
+        reclean_stored()
+        return 0
     result = collect_all(load_social_sources(), load_watchlist())
     log_summary(result)
     return 1 if result.failures else 0

@@ -16,7 +16,7 @@ Last updated: 2026-09-24 (after the first ValuePickr run; own-thread boost commi
 | 5 | Signals & backtesting | 9 rule-based price signals (no look-ahead test), Nifty 50 benchmark, event study built; no signal tuned |
 | 6 | Scheduling, digests, Telegram alerts | Scheduling + macOS failure notifications done; digests and Telegram not started |
 
-- Tests: 425 passing (`uv run pytest`), ruff clean.
+- Tests: 430 passing (`uv run pytest`), ruff clean.
 - Watchlist (`config/watchlist.yaml`): RELIANCE, TCS, HDFCBANK, INFY, TMPV.
 - Git: `main`, pushed to the public repo https://github.com/kartikey1232/stock-intel
   (created 2026-09-24 after a history scan for secrets and personal data).
@@ -168,8 +168,13 @@ not in git.
   rejoined. After rescoring, 684 of 706 linked mentions are scored; mean scores barely
   moved (HDFCBANK 0.004, INFY 0.002, RELIANCE 0.114, TMPV 0.017).
 - Link-text markers apply to posts fetched or re-checked after this change; the 712
-  existing posts get them over ~8 runs of the rolling re-check (100 posts per run), and
-  each such refresh counts as an "edit" and re-links the post.
+  existing posts get them over ~8 runs of the rolling re-check (100 posts per run).
+- The scheduled run on 2026-09-24 logged "100 re-checked, 0 deleted, 7 edited". All 7
+  (32873 #195, #196, #205; 8124 #165, #199, #201, #212; posted 2019-2021) were our
+  link-marker rule, not edits: edit detection compared cleaned text. It now uses
+  Discourse's `version` (fallback `updated_at`), and rule changes count as "re-cleaned".
+  Posts now also store privacy-stripped `raw_html`, so rules can be re-applied locally
+  (`--reclean`). Existing posts gain raw_html/version on their next re-check.
 - Social data is recent context only (uneven backfill per stock, deletions removed):
   never backtest history or cross-stock comparison (CLAUDE.md).
 

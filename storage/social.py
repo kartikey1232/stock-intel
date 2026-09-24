@@ -91,8 +91,8 @@ def topic_post_ids(platform: str, topic_id: str, engine: Engine | None = None) -
 
 
 def posts_to_recheck(platform: str, limit: int, engine: Engine | None = None) -> pd.DataFrame:
-    """The `limit` posts checked least recently: id, topic_id, platform_post_id, text."""
-    columns = ["id", "topic_id", "platform_post_id", "text"]
+    """The `limit` posts checked least recently, with their stored text and edit markers."""
+    columns = ["id", "topic_id", "platform_post_id", "text", "version", "platform_updated_at"]
     stmt = (
         select(*(SOCIAL_POSTS.c[c] for c in columns))
         .where(SOCIAL_POSTS.c.platform == platform)
@@ -106,22 +106,32 @@ def posts_to_recheck(platform: str, limit: int, engine: Engine | None = None) ->
 def mark_checked(
     post_ids: list[str],
     now: dt.datetime,
-    texts: dict[str, str | None] | None = None,
+    updates: dict[str, dict[str, Any]] | None = None,
     engine: Engine | None = None,
 ) -> None:
-    """Set checked_at for `post_ids`; posts in `texts` get new text and are re-linked."""
+    """Set checked_at for `post_ids` and apply per-post column `updates`. A post whose
+    update includes `text` is also re-linked (linked_at cleared)."""
     with (engine or db.get_engine()).begin() as conn:
         for chunk in _chunks([{"id": p} for p in post_ids], UPSERT_CHUNK_SIZE):
             ids = [c["id"] for c in chunk]
             conn.execute(
                 update(SOCIAL_POSTS).where(SOCIAL_POSTS.c.id.in_(ids)).values(checked_at=now)
             )
-        for post_id, text in (texts or {}).items():
+        for post_id, values in (updates or {}).items():
+            extra = {"linked_at": None} if "text" in values else {}
             conn.execute(
-                update(SOCIAL_POSTS)
-                .where(SOCIAL_POSTS.c.id == post_id)
-                .values(text=text, linked_at=None)
+                update(SOCIAL_POSTS).where(SOCIAL_POSTS.c.id == post_id).values(**values, **extra)
             )
+
+
+def stored_raw_posts(platform: str, engine: Engine | None = None) -> pd.DataFrame:
+    """id, raw_html and text of every post with stored raw HTML, for local recleaning."""
+    columns = ["id", "raw_html", "text"]
+    stmt = select(*(SOCIAL_POSTS.c[c] for c in columns)).where(
+        SOCIAL_POSTS.c.platform == platform, SOCIAL_POSTS.c.raw_html.is_not(None)
+    )
+    with (engine or db.get_engine()).connect() as conn:
+        return pd.DataFrame(conn.execute(stmt).mappings().all(), columns=columns)
 
 
 def posts_to_link(full: bool = False, engine: Engine | None = None) -> pd.DataFrame:

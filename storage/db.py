@@ -265,6 +265,14 @@ class SocialPost(Base):
     post_number: Mapped[int | None] = mapped_column(Integer)
     url: Mapped[str] = mapped_column(Text, nullable=False)
     text: Mapped[str | None] = mapped_column(Text)
+    # The post's HTML after privacy stripping (no quotes, mentions, images or attributes
+    # other than class). `text` is derived from it, so changed cleaning rules can be
+    # re-applied locally (collectors.valuepickr --reclean) without re-fetching.
+    raw_html: Mapped[str | None] = mapped_column(Text)
+    # The platform's own edit markers (Discourse `version`, `updated_at`): edits are
+    # detected from these, never from differences in our cleaned text.
+    version: Mapped[int | None] = mapped_column(Integer)
+    platform_updated_at: Mapped[dt.datetime | None] = mapped_column(UTCDateTime)
     author_hmac: Mapped[str | None] = mapped_column(String(64))
     likes: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, nullable=False, index=True)

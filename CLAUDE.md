@@ -47,6 +47,7 @@ uv run python -m collectors.result_files checklist  # which quarters x bases are
 uv run python -m collectors.results_ir          # HDFC Bank results PDFs from its IR site
 uv run python -m processing.results --report    # rebuild results table; last 8 quarters
 uv run python -m collectors.valuepickr          # ValuePickr posts (needs confirmed: true + SOCIAL_HASH_KEY)
+uv run python -m collectors.valuepickr --reclean  # re-apply text cleaning rules to stored raw_html (local)
 uv run python -m processing.social [--full] [--report]  # link posts, score, rebuild social_daily
 uv run streamlit run dashboard.py               # launch the dashboard
 ```
@@ -236,8 +237,15 @@ uv run streamlit run dashboard.py               # launch the dashboard
   `backfill_posts`. Discovered topics come from /latest.json by title (stock news terms).
 - Social deletion sync: posts missing from a topic's stream, or deleted/withdrawn/hidden
   on re-check (`recheck_posts` oldest-checked per run), are hard-deleted with their
-  mentions and sentiment; a topic returning 403/404/410 loses all its posts. Edited posts
-  get the new text and are re-linked. So stored history is what's still visible today,
+  mentions and sentiment; a topic returning 403/404/410 loses all its posts. An *edit* is
+  only what Discourse reports (higher post `version`, else later `updated_at`), never a
+  difference in our cleaned text; text that changes because our cleaning rules changed is
+  "re-cleaned" and logged separately. Both kinds get the new text and are re-linked.
+- Social raw HTML: `social_posts.raw_html` is the post's HTML after privacy stripping
+  (`sanitize_cooked`: quotes, @mentions, anything with a username, images, and every
+  attribute except `class` are removed). `text` = `extract_text(raw_html)`. After
+  changing `extract_text`/`TEXT_XPATH`, run `collectors.valuepickr --reclean` (local).
+  Never widen what `sanitize_cooked` keeps without checking it stores no identities. So stored history is what's still visible today,
   not what was visible then: Phase 5 backtests must treat social data as
   survivorship-biased, and filter on `first_seen_at`.
 - Social text cleaning drops quotes of other posts, @mentions, code, images and oneboxes
