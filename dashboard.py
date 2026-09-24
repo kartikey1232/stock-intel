@@ -18,8 +18,8 @@ from config.signals import SignalRule, load_signals
 from processing.adjustments import adjust_prices
 from processing.entities import LINK_THRESHOLD
 from processing.results import changes, joined_notes
-from processing.sentiment import TradingCalendar, news_time, session_for
-from processing.signals import display_signals
+from processing.sentiment import TradingCalendar, news_time, session_for, story_weighted_average
+from processing.signals import describe_signal_value, display_signals
 from storage.db import (
     project_path,
     read_corporate_actions,
@@ -353,19 +353,6 @@ def signal_markers(
     return merged[columns].reset_index(drop=True)
 
 
-def describe_signal_value(kind: str, value: float) -> str:
-    """Human-readable signal value (see config/signals.yaml for the units)."""
-    if kind == "rsi_cross":
-        return f"RSI {value:.1f}"
-    if kind == "volume_spike":
-        return f"{value:.1f}x average volume"
-    if kind == "ma_cross":
-        return f"SMA spread {value:+.2f}%"
-    if kind == "range_breakout":
-        return f"{value:+.2f}% beyond the prior 52-week extreme"
-    return f"gap {value:+.2f}%"
-
-
 def social_items(posts: pd.DataFrame, calendar: TradingCalendar) -> pd.DataFrame:
     """Linked posts, newest first, with `post_time` (IST-aware) and `session_date`."""
     if posts.empty:
@@ -433,19 +420,7 @@ def escape_markdown(text: str) -> str:
 
 def sentiment_averages(daily: pd.DataFrame, end: dt.date) -> tuple[float | None, float | None]:
     """Story-weighted mean of daily weighted scores over the 7 and 30 days up to `end`."""
-
-    def window(days: int) -> float | None:
-        dates = pd.to_datetime(daily["session_date"]).dt.date
-        rows = daily[(dates > end - dt.timedelta(days=days)) & (dates <= end)]
-        if rows.empty or rows["story_count"].sum() == 0:
-            return None
-        return float(
-            (rows["weighted_score"] * rows["story_count"]).sum() / rows["story_count"].sum()
-        )
-
-    if daily.empty:
-        return None, None
-    return window(7), window(30)
+    return story_weighted_average(daily, end, 7), story_weighted_average(daily, end, 30)
 
 
 def actions_in_range(actions: pd.DataFrame, start: dt.date, end: dt.date) -> pd.DataFrame:

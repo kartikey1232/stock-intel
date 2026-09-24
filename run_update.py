@@ -14,6 +14,8 @@ Steps:
                   NSE/BSE access is undecided (see README).
   5. social       ValuePickr posts -> stock links -> sentiment -> daily aggregates
                   (skip with --skip-social)
+Then the run and its failed steps are recorded in pipeline_runs, and the day's alerts
+are built (processing.alerts; no delivery yet). A failure there is reported too.
 
 Corporate actions are synced from config/corporate_actions.yaml before indicators are
 computed; symbols whose actions changed get a full indicator recompute.
@@ -30,6 +32,7 @@ Run with:  uv run python run_update.py [--full-indicators] [--skip-news] [--skip
 """
 
 import argparse
+import datetime as dt
 import logging
 import sys
 import time
@@ -41,7 +44,7 @@ from config.loader import PriceSeries, Stock, load_benchmarks, load_watchlist
 from processing.adjustments import sync_actions_from_config
 from processing.indicators import process_all
 from processing.signals import run as compute_signals
-from storage.db import init_db
+from storage.db import init_db, record_pipeline_run
 from utils import setup_logging
 
 logger = logging.getLogger("run_update")
@@ -182,6 +185,30 @@ def run_social(stocks: list[Stock]) -> list[str]:
     return run_steps("social", lambda: social_steps(stocks))
 
 
+def run_alerts(stocks: list[Stock]) -> None:
+    """Build and store the latest completed session's alerts (lazy import, as for news)."""
+    from config.market_calendar import latest_completed_session, load_holidays
+    from processing import alerts
+
+    day = latest_completed_session(dt.datetime.now(dt.UTC), load_holidays())
+    alerts.run(stocks, [day])
+
+
+def record_run(started_at: dt.datetime, failed: list[str]) -> None:
+    """Store this run in pipeline_runs (never raises: a logging problem mustn't hide results)."""
+    try:
+        record_pipeline_run(
+            {
+                "started_at": started_at,
+                "finished_at": dt.datetime.now(dt.UTC),
+                "exit_code": 1 if failed else 0,
+                "failures": "".join(f"{name}\n" for name in failed),
+            }
+        )
+    except Exception:
+        logger.exception("Could not record the run in pipeline_runs")
+
+
 def check_session_bars(stocks: Sequence[PriceSeries], already_failed: set[str]) -> list[str]:
     """Stocks missing the latest session's bar, excluding ones whose download failed."""
     try:
@@ -201,6 +228,7 @@ def run(
 ) -> int:
     """Run the full update pipeline and return a process exit code."""
     started = time.monotonic()
+    started_at = dt.datetime.now(dt.UTC)
     init_db()
     stocks = load_watchlist()
     series = [*stocks, *load_benchmarks()]
@@ -247,6 +275,13 @@ def run(
     failed += [f"news: {name}" for name in news_failures]
     failed += [f"filings: {name}" for name in filings_failures]
     failed += [f"social: {name}" for name in social_failures]
+    record_run(started_at, failed)
+    try:
+        run_alerts(stocks)
+    except Exception:
+        logger.exception("Building alerts failed")
+        failed.append("alerts")
+        record_run(started_at, failed)
     elapsed = time.monotonic() - started
     if failures_file is not None:
         failures_file.write_text("".join(f"{name}\n" for name in failed), encoding="utf-8")

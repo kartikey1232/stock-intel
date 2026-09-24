@@ -125,6 +125,38 @@ class Signal(Base):
     computed_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, nullable=False)
 
 
+class AlertRow(Base):
+    """An attention flag built by processing/alerts.py (never advice).
+
+    Keyed on (symbol, alert_type, subject) so a re-run never stores the same alert twice:
+    `subject` identifies the event, e.g. "2026-09-24:gap_down" for daily alerts or a
+    filing id for results. `symbol` is "*" for pipeline alerts. `sent_at` stays empty
+    until a delivery channel exists.
+    """
+
+    __tablename__ = "alerts"
+
+    symbol: Mapped[str] = mapped_column(String(32), primary_key=True)
+    alert_type: Mapped[str] = mapped_column(String(32), primary_key=True)
+    subject: Mapped[str] = mapped_column(String(128), primary_key=True)
+    alert_date: Mapped[dt.date] = mapped_column(Date, nullable=False, index=True)
+    severity: Mapped[str] = mapped_column(String(16), nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, nullable=False)
+    sent_at: Mapped[dt.datetime | None] = mapped_column(UTCDateTime)
+
+
+class PipelineRun(Base):
+    """One run_update.py run: when, exit code and failed steps (one per line)."""
+
+    __tablename__ = "pipeline_runs"
+
+    started_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, primary_key=True)
+    finished_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, nullable=False)
+    exit_code: Mapped[int] = mapped_column(Integer, nullable=False)
+    failures: Mapped[str] = mapped_column(Text, nullable=False, default="")
+
+
 class CorporateActionRow(Base):
     """A corporate action (split, bonus, demerger...) used to build adjusted prices.
 
@@ -415,6 +447,8 @@ TEXT_STATUSES = ("pending", "ok", "paywalled", "failed", "skipped")
 PRICES: Table = Price.__table__  # type: ignore[assignment]
 INDICATORS: Table = Indicator.__table__  # type: ignore[assignment]
 SIGNALS: Table = Signal.__table__  # type: ignore[assignment]
+ALERTS: Table = AlertRow.__table__  # type: ignore[assignment]
+PIPELINE_RUNS: Table = PipelineRun.__table__  # type: ignore[assignment]
 CORPORATE_ACTIONS: Table = CorporateActionRow.__table__  # type: ignore[assignment]
 ACTION_COLUMNS = list(CORPORATE_ACTIONS.columns.keys())
 ARTICLES: Table = Article.__table__  # type: ignore[assignment]
@@ -577,6 +611,55 @@ def read_signals(symbol: str | None = None, engine: Engine | None = None) -> pd.
     with (engine or get_engine()).connect() as conn:
         return pd.DataFrame(
             conn.execute(stmt).mappings().all(), columns=list(SIGNALS.columns.keys())
+        )
+
+
+def insert_new_alerts(rows: list[dict[str, Any]], engine: Engine | None = None) -> int:
+    """Insert alerts whose (symbol, alert_type, subject) isn't stored yet. Returns inserted."""
+    engine = engine or get_engine()
+    inserted = 0
+    with engine.begin() as conn:
+        for chunk in _chunks(rows, UPSERT_CHUNK_SIZE):
+            stmt = _dialect_insert(engine)(ALERTS).values(chunk)
+            stmt = stmt.on_conflict_do_nothing(index_elements=["symbol", "alert_type", "subject"])
+            inserted += conn.execute(stmt).rowcount or 0
+    return inserted
+
+
+def read_alerts(
+    start: dt.date | None = None, end: dt.date | None = None, engine: Engine | None = None
+) -> pd.DataFrame:
+    """Stored alerts with alert_date in [start, end], by date, severity and symbol."""
+    stmt = select(ALERTS)
+    if start is not None:
+        stmt = stmt.where(ALERTS.c.alert_date >= start)
+    if end is not None:
+        stmt = stmt.where(ALERTS.c.alert_date <= end)
+    stmt = stmt.order_by(ALERTS.c.alert_date, ALERTS.c.severity, ALERTS.c.symbol, ALERTS.c.subject)
+    with (engine or get_engine()).connect() as conn:
+        return pd.DataFrame(
+            conn.execute(stmt).mappings().all(), columns=list(ALERTS.columns.keys())
+        )
+
+
+def record_pipeline_run(row: dict[str, Any], engine: Engine | None = None) -> None:
+    """Insert or replace a pipeline_runs row (keyed on started_at)."""
+    engine = engine or get_engine()
+    stmt = _dialect_insert(engine)(PIPELINE_RUNS).values(row)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["started_at"],
+        set_={c: stmt.excluded[c] for c in ("finished_at", "exit_code", "failures")},
+    )
+    with engine.begin() as conn:
+        conn.execute(stmt)
+
+
+def read_pipeline_runs(engine: Engine | None = None) -> pd.DataFrame:
+    """Every recorded run_update.py run, oldest first."""
+    stmt = select(PIPELINE_RUNS).order_by(PIPELINE_RUNS.c.started_at)
+    with (engine or get_engine()).connect() as conn:
+        return pd.DataFrame(
+            conn.execute(stmt).mappings().all(), columns=list(PIPELINE_RUNS.columns.keys())
         )
 
 
@@ -944,6 +1027,14 @@ def read_story_sources(story_ids: list[str], engine: Engine | None = None) -> pd
 def read_filings(engine: Engine | None = None) -> pd.DataFrame:
     """All filings with the fields needed for categorisation."""
     columns = ["id", "exchange", "symbol", "filed_at", "category", "subject", "description"]
+    stmt = select(*(FILINGS.c[c] for c in columns)).order_by(FILINGS.c.filed_at)
+    with (engine or get_engine()).connect() as conn:
+        return pd.DataFrame(conn.execute(stmt).mappings().all(), columns=columns)
+
+
+def read_filings_for_alerts(engine: Engine | None = None) -> pd.DataFrame:
+    """All filings with the fields processing/alerts.py needs."""
+    columns = ["id", "symbol", "filed_at", "first_seen_at", "filing_type", "subject"]
     stmt = select(*(FILINGS.c[c] for c in columns)).order_by(FILINGS.c.filed_at)
     with (engine or get_engine()).connect() as conn:
         return pd.DataFrame(conn.execute(stmt).mappings().all(), columns=columns)

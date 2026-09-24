@@ -54,6 +54,8 @@ def fake_steps(
     monkeypatch.setattr(run_update, "news_steps", lambda stocks: [(n, step(n)) for n in NEWS])
     monkeypatch.setattr(run_update, "filings_steps", lambda stocks: [(n, step(n)) for n in FILINGS])
     monkeypatch.setattr(run_update, "social_steps", lambda stocks: [(n, step(n)) for n in SOCIAL])
+    monkeypatch.setattr(run_update, "record_pipeline_run", lambda row: None)
+    monkeypatch.setattr(run_update, "run_alerts", lambda stocks: None)
 
 
 def test_runs_prices_then_indicators_then_news_then_filings_then_social(calls) -> None:
@@ -260,3 +262,22 @@ def test_real_filings_steps_are_wired_in_order() -> None:
 
 def test_real_social_steps_are_wired_in_order() -> None:
     assert [name for name, _ in run_update.social_steps([])] == SOCIAL
+
+
+def test_run_is_recorded_before_alerts_and_alert_failures_are_reported(
+    monkeypatch, calls, tmp_path
+) -> None:
+    order = []
+    monkeypatch.setattr(
+        run_update, "record_pipeline_run", lambda row: order.append(row["failures"])
+    )
+
+    def broken_alerts(stocks):
+        order.append("alerts")
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(run_update, "run_alerts", broken_alerts)
+    failures_file = tmp_path / "failures.txt"
+    assert run_update.run(failures_file=failures_file) == 1
+    assert order == ["", "alerts", "alerts\n"]  # recorded clean, alerts ran, then re-recorded
+    assert failures_file.read_text().splitlines() == ["alerts"]

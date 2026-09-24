@@ -35,6 +35,7 @@ uv run python -m processing.signals [--report]  # rebuild rule-based price signa
 uv run python -m processing.backtest [--csv PATH]  # event study of stored signals vs Nifty 50
 uv run python -m collectors.prices --universe nifty50_ex_watchlist  # research universe prices
 uv run python -m processing.hypotheses          # registered out-of-sample test (docs/hypotheses.md)
+uv run python -m processing.alerts [--date D] [--days N] [--digest]  # build alerts; print digest
 uv run python -m collectors.news                # news articles (Google News + publisher RSS)
 uv run python -m collectors.article_text [--reclean]  # full text for pending articles
 uv run python -m processing.stories [--full]    # group syndicated copies into stories
@@ -311,6 +312,17 @@ uv run streamlit run dashboard.py               # launch the dashboard
   filings, indicators or dashboard entry. Only registered signals are computed on them.
   They have no corporate actions recorded: Yahoo doesn't always adjust (TRENT
   2026-01-01, -33%, looks unadjusted).
+- Alerts (`processing/alerts.py`, `config/alerts.yaml`) are attention flags, never advice.
+  No alert or digest text may match `FORBIDDEN_RE` (buy/sell/accumulate/target price/
+  recommend...): `build_alerts` refuses to store it, and third-party headlines that read
+  like tips (`TIP_HEADLINE_RE`) are never quoted. Every price-signal alert carries its
+  event-study note (in-sample verdict at `backtest_note.horizon`, plus the out-of-sample
+  status kept by hand in `config/alerts.yaml`; update it after each registered test).
+  Alerts are keyed on (symbol, alert_type, subject), so re-runs never duplicate; `sent_at`
+  stays NULL until delivery exists. Results alerts only fire for the latest quarter and
+  board dates within `max_age_days` (backfilled history never alerts); pending-action
+  alerts only for the latest day; a news shift only on its first day. run_update records
+  each run in `pipeline_runs` before building the day's alerts.
 - Benchmarks (`benchmarks:` in `config/watchlist.yaml`, e.g. NIFTY50 = ^NSEI) get prices,
   the missing-bar check and indicators like stocks, but `load_watchlist()` never returns
   them: no news, social, filings, signals or dashboard entry.

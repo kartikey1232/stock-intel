@@ -161,6 +161,19 @@ def compute_signals(prices: pd.DataFrame, rules: list[SignalRule]) -> pd.DataFra
 # --- display and alerts ------------------------------------------------------------
 
 
+def describe_signal_value(kind: str, value: float) -> str:
+    """Human-readable signal value (see config/signals.yaml for the units)."""
+    if kind == "rsi_cross":
+        return f"RSI {value:.1f}"
+    if kind == "volume_spike":
+        return f"{value:.1f}x average volume"
+    if kind == "ma_cross":
+        return f"SMA spread {value:+.2f}%"
+    if kind == "range_breakout":
+        return f"{value:+.2f}% beyond the prior 52-week extreme"
+    return f"gap {value:+.2f}%"
+
+
 def confirmed_crosses(prices: pd.DataFrame, rule: SignalRule) -> pd.DataFrame:
     """ma_cross events dated when the averages first stand `min_gap_pct` apart in the
     cross's direction, without having crossed back first (SIGNAL_COLUMNS).

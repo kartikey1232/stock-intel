@@ -209,6 +209,16 @@ class TradingCalendar:
             return day in self._known_set
         return day.weekday() < 5
 
+    def previous_trading_day(self, day: dt.date) -> dt.date:
+        """The last trading day strictly before `day`."""
+        i = bisect.bisect_left(self._known, day)
+        if self._known and day <= self._known[-1] and i > 0:
+            return self._known[i - 1]
+        day -= dt.timedelta(days=1)
+        while not self.is_trading_day(day):
+            day -= dt.timedelta(days=1)
+        return day
+
     def next_trading_day(self, day: dt.date) -> dt.date:
         """The first trading day strictly after `day`."""
         i = bisect.bisect_right(self._known, day)
@@ -308,6 +318,18 @@ def rebuild_daily(config: NewsConfig) -> int:
     replace_news_daily(config.sentiment_model, rows)
     logger.info("Rebuilt news_daily: %d stock-session row(s)", len(rows))
     return len(rows)
+
+
+def story_weighted_average(daily: pd.DataFrame, end: dt.date, days: int) -> float | None:
+    """Story-weighted mean of news_daily weighted scores over sessions in (end - days, end];
+    None if there were no stories."""
+    if daily.empty:
+        return None
+    dates = pd.to_datetime(daily["session_date"]).dt.date
+    rows = daily[(dates > end - dt.timedelta(days=days)) & (dates <= end)]
+    if rows.empty or rows["story_count"].sum() == 0:
+        return None
+    return float((rows["weighted_score"] * rows["story_count"]).sum() / rows["story_count"].sum())
 
 
 # --- report ------------------------------------------------------------------------

@@ -14,9 +14,9 @@ Last updated: 2026-09-24 (after the first ValuePickr run; own-thread boost commi
 | 3 | NSE/BSE filings (quarterly results) | Done: all 80 XBRL files (8 quarters × standalone/consolidated × 5 stocks) imported by hand; flags reviewed |
 | 4 | Social media signals | ValuePickr collecting (4 dedicated topics, first run 2026-09-24); Reddit: nothing built until an API application is approved |
 | 5 | Signals & backtesting | 9 rule-based price signals (no look-ahead test), Nifty 50 benchmark, event study built; no signal tuned |
-| 6 | Scheduling, digests, Telegram alerts | Scheduling + macOS failure notifications done; digests and Telegram not started |
+| 6 | Scheduling, digests, Telegram alerts | Scheduling, macOS failure notifications, alert engine and template digest done; delivery (Telegram) not started |
 
-- Tests: 436 passing (`uv run pytest`), ruff clean.
+- Tests: 454 passing (`uv run pytest`), ruff clean.
 - Watchlist (`config/watchlist.yaml`): RELIANCE, TCS, HDFCBANK, INFY, TMPV.
 - Git: `main`, pushed to the public repo https://github.com/kartikey1232/stock-intel
   (created 2026-09-24 after a history scan for secrets and personal data).
@@ -232,6 +232,16 @@ not in git.
 - `config/signals.yaml` changed (min_gap_pct lines added), so its git blob no longer
   matches the one recorded in `docs/hypotheses.md`; the gap_up/gap_down settings the
   registration froze are unchanged.
+
+### Alerts (2026-09-24)
+- Built for the last 10 trading days (2026-09-10 to 2026-09-24): 7 alerts. 15 Sep: gap-ups
+  for INFY (+4.6% open), TCS (+3.4%), TMPV (+6.3%), and RELIANCE's 52-week low breakdown;
+  17 Sep: TMPV +4.5%; 18 Sep: TCS -3.9%, TMPV -3.4%. 24 Sep: quiet for all five.
+- No news for the 15 Sep alerts: news collection started 2026-09-23 with a 7-day Google
+  window, so linked news before ~16 Sep is sparse.
+- No results alerts: all results were backfilled (board dates up to 2026-08-12, older than
+  max_age_days). No pending corporate actions exist. Pipeline status reads "no run
+  recorded" until the next scheduled run, which is the first to write pipeline_runs.
 
 ## Open items / next steps
 

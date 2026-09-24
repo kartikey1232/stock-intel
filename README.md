@@ -371,6 +371,8 @@ New stocks get their full 5-year history on the next update.
 │   ├── backtest.py        # Loads and validates event-study settings
 │   ├── universes.yaml     # Price-only research universes (45 other Nifty 50 stocks)
 │   ├── universes.py       # Loads research universes
+│   ├── alerts.yaml        # Alert types, severities, thresholds, backtest-note settings
+│   ├── alerts.py          # Loads and validates alert settings
 │   ├── loader.py          # Loads and validates the watchlist
 │   ├── corporate_actions.yaml  # Splits/bonuses/demergers (reviewed in git)
 │   ├── corporate_actions.py    # Loads and validates corporate actions
@@ -398,6 +400,7 @@ New stocks get their full 5-year history on the next update.
 │   ├── signals.py         # Rule-based price signals (no look-ahead)
 │   ├── backtest.py        # Event study of signals vs Nifty 50 and a do-nothing baseline
 │   ├── hypotheses.py      # Registered out-of-sample test (docs/hypotheses.md)
+│   ├── alerts.py          # Daily alerts (attention flags) and the template digest
 │   └── indicators.py      # RSI, MACD, SMA, EMA, Bollinger, ATR via pandas-ta
 ├── storage/
 │   ├── db.py              # SQLAlchemy schema, upserts, reads
@@ -418,6 +421,9 @@ New stocks get their full 5-year history on the next update.
 - `indicators` (`symbol, date`): rsi_14, macd, macd_signal, macd_hist, sma_20, sma_50,
   sma_200, ema_20, bb_upper, bb_middle, bb_lower, atr_14, volume_sma_20. Computed from
   adjusted prices.
+- `alerts` (`symbol, alert_type, subject`): alert_date, severity, text, created_at,
+  sent_at (NULL until delivery exists). `pipeline_runs` (`started_at`): finished_at,
+  exit_code, failures.
 - `signals` (`symbol, date, signal`): direction (bullish/bearish/neutral), value
   (scale-free: %, a volume multiple or an RSI level), computed_at.
 - `corporate_actions` (`symbol, ex_date`): action_type, price_factor, source, note.
@@ -528,6 +534,25 @@ later bars arrive, including a later split. Signals are for the watchlist only; 
 Nifty 50 (`^NSEI`, under `benchmarks:` in `config/watchlist.yaml`) is stored as a
 benchmark price series with indicators, not shown as a stock.
 
+## Alerts and daily digest (Phase 6)
+
+After each update, `processing/alerts.py` builds the day's alerts into the `alerts`
+table (no delivery yet). Types and thresholds are in `config/alerts.yaml`: new results
+for the latest quarter (with YoY/QoQ), a price move over 3% or an opening gap (with that
+session's news and filings), 52-week breakouts and SMA crosses, a shift in 7-day news
+sentiment vs 30-day, pending corporate actions, and pipeline failures. Each price-signal
+alert says how that signal did in the event study (e.g. "historically no edge vs doing
+nothing at 20 trading days (n=40)"): alerts are attention flags, and no alert text may
+recommend buying or selling. Re-running never duplicates an alert.
+
+```bash
+uv run python -m processing.alerts --digest            # today's alerts and digest
+uv run python -m processing.alerts --days 10 --digest  # rebuild the last 10 trading days
+```
+
+The digest is template-based: one line per stock ("quiet day" if nothing happened), the
+alerts, and the pipeline status of that day's scheduled run.
+
 ## Roadmap
 
 1. ✅ Prices + technical indicators
@@ -535,4 +560,5 @@ benchmark price series with indicators, not shown as a stock.
 3. NSE/BSE filings (quarterly results)
 4. Social media signals (ValuePickr done; Reddit awaiting API approval)
 5. Signals & backtesting (price signals and an event study done)
-6. Scheduling, daily digests, Telegram alerts
+6. Scheduling, daily digests, Telegram alerts (scheduling, alert engine and digest done;
+   delivery next)

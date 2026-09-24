@@ -1,0 +1,38 @@
+# Alert engine for processing/alerts.py (Phase 6). Alerts are attention flags, never
+# advice: no alert text may recommend buying or selling (a test enforces this).
+# Delivery (Telegram etc.) isn't built yet; alerts are stored with sent_at empty.
+
+alerts:
+  results:              # a newly imported results filing for the latest quarter
+    enabled: true
+    severity: high
+    max_age_days: 30    # only if the results are this recent (backfilled history doesn't alert)
+  price_move:           # |close-to-close move| above threshold_pct, or a gap signal that day
+    enabled: true
+    severity: normal
+    threshold_pct: 3.0
+  price_signal:         # these signals (SMA crosses respect min_gap_pct in config/signals.yaml)
+    enabled: true
+    severity: normal
+    signals: [high_52w_breakout, low_52w_breakdown, golden_cross, death_cross]
+  news_shift:           # 7-day news sentiment moves away from the 30-day average
+    enabled: true
+    severity: normal
+    threshold: 0.3      # |7-day - 30-day| story-weighted FinBERT score
+    min_stories_7d: 3
+    top_headlines: 3
+  pending_action:       # corporate action found in filings that may need corporate_actions.yaml
+    enabled: true
+    severity: high
+    statuses: [upcoming, needs_review]
+  pipeline:             # failed steps of the day's run_update
+    enabled: true
+    severity: high
+
+# The one-line backtest note on price-signal alerts (processing/backtest.py, in sample).
+backtest_note:
+  horizon: 20           # trading days
+  # Out-of-sample status from docs/hypotheses.md, maintained by hand after each test.
+  out_of_sample:
+    gap_down: not confirmed out of sample (docs/hypotheses.md H1)
+    gap_up: not confirmed out of sample (docs/hypotheses.md H2)
