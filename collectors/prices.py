@@ -11,9 +11,13 @@ Failures are explicit, never "no new data":
   has a bar (the last stored date, or five years of history).
 - `missing_session_bars` lists stocks without a bar for the latest completed session.
 
-Run with:  uv run python -m collectors.prices
+A price-only research universe (config/universes.yaml) is collected the same way with
+--universe NAME; it is never part of the daily run_update.py.
+
+Run with:  uv run python -m collectors.prices [--universe NAME]
 """
 
+import argparse
 import datetime as dt
 import logging
 import random
@@ -244,11 +248,20 @@ def log_summary(summary: RunSummary) -> None:
         logger.info("All %d symbols collected successfully", len(summary.rows_written))
 
 
-def main() -> int:
-    """Entry point: collect prices for the watchlist and benchmarks. Exit code 1 on failure."""
+def main(argv: list[str] | None = None) -> int:
+    """Entry point: collect prices for the watchlist and benchmarks, or with --universe for
+    a research universe. Exit code 1 on any failure or missing bar."""
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--universe", help="collect a universe from config/universes.yaml")
+    args = parser.parse_args(argv)
     setup_logging()
     init_db()
-    stocks = [*load_watchlist(), *load_benchmarks()]
+    if args.universe:
+        from config.universes import load_universe
+
+        stocks = list(load_universe(args.universe).members)
+    else:
+        stocks = [*load_watchlist(), *load_benchmarks()]
     summary = collect_all(stocks)
     log_summary(summary)
     missing = missing_session_bars(stocks)

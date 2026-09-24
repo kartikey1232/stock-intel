@@ -366,6 +366,8 @@ New stocks get their full 5-year history on the next update.
 │   ├── signals.py         # Loads and validates signal definitions
 │   ├── backtest.yaml      # Event-study horizons, clustering, bootstrap settings
 │   ├── backtest.py        # Loads and validates event-study settings
+│   ├── universes.yaml     # Price-only research universes (45 other Nifty 50 stocks)
+│   ├── universes.py       # Loads research universes
 │   ├── loader.py          # Loads and validates the watchlist
 │   ├── corporate_actions.yaml  # Splits/bonuses/demergers (reviewed in git)
 │   ├── corporate_actions.py    # Loads and validates corporate actions
@@ -392,6 +394,7 @@ New stocks get their full 5-year history on the next update.
 │   ├── results.py         # XBRL/PDF results extraction, QoQ/YoY, validation
 │   ├── signals.py         # Rule-based price signals (no look-ahead)
 │   ├── backtest.py        # Event study of signals vs Nifty 50 and a do-nothing baseline
+│   ├── hypotheses.py      # Registered out-of-sample test (docs/hypotheses.md)
 │   └── indicators.py      # RSI, MACD, SMA, EMA, Bollinger, ATR via pandas-ta
 ├── storage/
 │   ├── db.py              # SQLAlchemy schema, upserts, reads
@@ -508,6 +511,13 @@ from all days (doing nothing). Consecutive firings count once. It reports n, mea
 median excess, hit rate, and a bootstrap 95% CI per signal, marks n < 30 as too few
 events, and states its limits: 5 hand-picked large caps (survivorship bias), 36 results
 tested at once, no transaction costs.
+
+**Out-of-sample checks.** Hypotheses are pre-registered in
+[`docs/hypotheses.md`](docs/hypotheses.md) with frozen parameters, then tested on a
+price-only universe of 45 other Nifty 50 stocks (`config/universes.yaml`, collected with
+`uv run python -m collectors.prices --universe nifty50_ex_watchlist`, never in the daily
+update) with `uv run python -m processing.hypotheses`. The first two (gap continuation,
+H1 and H2) were not supported out of sample.
 
 A signal on a given day uses only data available at that day's close. A test replays
 the price history one bar at a time and fails if any day's signals would change once

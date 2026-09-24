@@ -65,3 +65,32 @@ at commit `071e977`:
 - Events cluster on market-wide gap days across stocks, and the 20-day windows overlap,
   so events aren't independent and the bootstrap CI is too narrow.
 - No transaction costs, taxes or slippage.
+
+### Result (run 2026-09-24, after registration commit `d031f56`)
+
+The registered test (`uv run python -m processing.hypotheses`) ran on 45 stocks with
+prices from 2021-09-24 to 2026-09-24:
+
+| | Signal | h | n | Edge | 95% CI (edge) | Mean excess | 95% CI (excess) | At this horizon |
+|---|---|---|---|---|---|---|---|---|
+| H1 | gap_down | 5 | 272 | +0.19% | [−0.28%, +0.67%] | −0.08% | [−0.55%, +0.40%] | did not hold |
+| H1 | gap_down | 20 | 271 | +0.27% | [−0.66%, +1.19%] | +0.37% | [−0.56%, +1.31%] | did not hold |
+| H2 | gap_up | 1 | 302 | −0.28% | [−0.60%, +0.04%] | −0.31% | [−0.63%, +0.01%] | did not hold |
+
+- **H1: not supported.** Out of sample the 5- and 20-day edges are near zero, and the
+  in-sample +1.47%/+1.63% did not replicate.
+- **H2: not supported** under the registered rule. The point estimate has the predicted
+  sign, but the CI includes zero.
+
+Excluded by the registered rules: TRENT 2026-01-01 gap_down (overnight move beyond
+25%). The ITC demerger date had no gap event (the overnight move was −1.8%).
+
+**Data issue found after the run (not part of the registration).** TRENT's 1 Jan 2026
+move from 4,279 to 2,853 (−33%) looks like a bonus or split Yahoo hasn't adjusted. The
+registered rule excluded the event on that day, but TRENT's earlier bars are unadjusted,
+so its baseline and windows spanning that date include a false −33% move. A post-hoc
+sensitivity check without TRENT gives H1 +0.29% [−0.19%, +0.74%] at 5 days and +0.42%
+[−0.48%, +1.36%] at 20 days (still not supported), and H2 −0.34% [−0.65%, −0.01%] (just
+below zero). This check was chosen after seeing the data and is reported for
+transparency only: it doesn't change the verdicts. H2 stays an open question; test it
+again only as a new registration on data after 2026-09-24.

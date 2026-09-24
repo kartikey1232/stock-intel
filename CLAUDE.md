@@ -33,6 +33,8 @@ uv run python -m collectors.prices              # prices only
 uv run python -m processing.indicators [--full] # indicators only (watchlist + benchmarks)
 uv run python -m processing.signals [--report]  # rebuild rule-based price signals; counts
 uv run python -m processing.backtest [--csv PATH]  # event study of stored signals vs Nifty 50
+uv run python -m collectors.prices --universe nifty50_ex_watchlist  # research universe prices
+uv run python -m processing.hypotheses          # registered out-of-sample test (docs/hypotheses.md)
 uv run python -m collectors.news                # news articles (Google News + publisher RSS)
 uv run python -m collectors.article_text [--reclean]  # full text for pending articles
 uv run python -m processing.stories [--full]    # group syndicated copies into stories
@@ -283,6 +285,17 @@ uv run streamlit run dashboard.py               # launch the dashboard
   `cluster_gap` (10) bars chain into one. n < 30 = "too few events to judge". The
   report must keep stating its limits (survivorship, multiple testing, no costs,
   dependent events). Don't tune signal parameters on these results: it overfits.
+- Hypotheses: register them in `docs/hypotheses.md` (dated, parameters frozen, decision
+  rule and data rules written down) and commit that before fetching or testing
+  out-of-sample data. Never edit a registered entry or tune parameters to it: append
+  results, and put any new idea in a new dated entry tested on new data. Post-hoc checks
+  must be labelled as such and never change a verdict.
+- Research universes (`config/universes.yaml`, e.g. `nifty50_ex_watchlist`, 45 Nifty 50
+  stocks from a Wikipedia list dated 2025-12-08) are price-only. They're collected with
+  `collectors.prices --universe`, never by `run_update.py`, and get no news, social,
+  filings, indicators or dashboard entry. Only registered signals are computed on them.
+  They have no corporate actions recorded: Yahoo doesn't always adjust (TRENT
+  2026-01-01, -33%, looks unadjusted).
 - Benchmarks (`benchmarks:` in `config/watchlist.yaml`, e.g. NIFTY50 = ^NSEI) get prices,
   the missing-bar check and indicators like stocks, but `load_watchlist()` never returns
   them: no news, social, filings, signals or dashboard entry.

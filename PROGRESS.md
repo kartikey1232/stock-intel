@@ -16,7 +16,7 @@ Last updated: 2026-09-24 (after the first ValuePickr run; own-thread boost commi
 | 5 | Signals & backtesting | 9 rule-based price signals (no look-ahead test), Nifty 50 benchmark, event study built; no signal tuned |
 | 6 | Scheduling, digests, Telegram alerts | Scheduling + macOS failure notifications done; digests and Telegram not started |
 
-- Tests: 417 passing (`uv run pytest`), ruff clean.
+- Tests: 425 passing (`uv run pytest`), ruff clean.
 - Watchlist (`config/watchlist.yaml`): RELIANCE, TCS, HDFCBANK, INFY, TMPV.
 - Git: `main`, pushed to the public repo https://github.com/kartikey1232/stock-intel
   (created 2026-09-24 after a history scan for secrets and personal data).
@@ -201,6 +201,20 @@ not in git.
   mean excess after signals is negative for most signals; read the edge column.
 - Not acted on: no signal parameters were changed. Treat the gap results as hypotheses
   to recheck on new data, not findings.
+
+### Out-of-sample test (2026-09-24)
+- H1 (gap_down continuation at 5/20 days) and H2 (gap_up underperformance at 1 day) were
+  registered in `docs/hypotheses.md` (commit `d031f56`) before any data was fetched, with
+  parameters frozen at `071e977`.
+- Universe: 45 other Nifty 50 stocks (Wikipedia list dated 2025-12-08, unverified against
+  NSE's official list), prices 2021-09-24 to 2026-09-24 via `collectors.prices
+  --universe`. SUNPHARMA timed out on the first pass and succeeded on the retry.
+- Result: H1 not supported (edge +0.19%/+0.27%, CIs include 0, n~272). H2 not supported
+  (edge -0.28% [-0.60%, +0.04%], n=302). A post-hoc check without TRENT (an unadjusted
+  -33% move on 2026-01-01) puts H2 at -0.34% [-0.65%, -0.01%]; labelled post hoc, so it
+  doesn't change the verdict.
+- The in-sample gap results were most likely chance findings, as the multiple-testing
+  note warned.
 
 ## Open items / next steps
 

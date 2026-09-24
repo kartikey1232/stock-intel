@@ -1,0 +1,61 @@
+# Price-only research universes (Phase 5). Members get daily prices from the same
+# collector as the watchlist (collectors/prices.py --universe NAME) and nothing else:
+# no news, social, filings, indicators or dashboard entry. They are never part of
+# run_update.py, so the daily watchlist update isn't slowed or rate-limited by them.
+
+universes:
+  nifty50_ex_watchlist:
+    purpose: Out-of-sample test of docs/hypotheses.md H1 and H2 (gap signals only).
+    source: >-
+      Wikipedia "NIFTY 50" constituents table (list dated 2025-12-08), retrieved
+      2026-09-24, minus the 5 watchlist stocks. Not checked against NSE's official list,
+      which this project doesn't fetch (principle 7); later rebalances may be missing.
+    # Demerger ex-dates Yahoo doesn't adjust for: gap events on these dates are excluded.
+    known_demergers:
+      - {symbol: ITC, ex_date: 2025-01-06, note: ITC Hotels demerger}
+    members:
+      - {symbol: "ADANIENT", yf: "ADANIENT.NS", name: "Adani Enterprises"}
+      - {symbol: "ADANIPORTS", yf: "ADANIPORTS.NS", name: "Adani Ports & SEZ"}
+      - {symbol: "APOLLOHOSP", yf: "APOLLOHOSP.NS", name: "Apollo Hospitals"}
+      - {symbol: "ASIANPAINT", yf: "ASIANPAINT.NS", name: "Asian Paints"}
+      - {symbol: "AXISBANK", yf: "AXISBANK.NS", name: "Axis Bank"}
+      - {symbol: "BAJAJ-AUTO", yf: "BAJAJ-AUTO.NS", name: "Bajaj Auto"}
+      - {symbol: "BAJFINANCE", yf: "BAJFINANCE.NS", name: "Bajaj Finance"}
+      - {symbol: "BAJAJFINSV", yf: "BAJAJFINSV.NS", name: "Bajaj Finserv"}
+      - {symbol: "BEL", yf: "BEL.NS", name: "Bharat Electronics"}
+      - {symbol: "BHARTIARTL", yf: "BHARTIARTL.NS", name: "Bharti Airtel"}
+      - {symbol: "CIPLA", yf: "CIPLA.NS", name: "Cipla"}
+      - {symbol: "COALINDIA", yf: "COALINDIA.NS", name: "Coal India"}
+      - {symbol: "DRREDDY", yf: "DRREDDY.NS", name: "Dr. Reddy's Laboratories"}
+      - {symbol: "EICHERMOT", yf: "EICHERMOT.NS", name: "Eicher Motors"}
+      - {symbol: "ETERNAL", yf: "ETERNAL.NS", name: "Eternal"}
+      - {symbol: "GRASIM", yf: "GRASIM.NS", name: "Grasim Industries"}
+      - {symbol: "HCLTECH", yf: "HCLTECH.NS", name: "HCLTech"}
+      - {symbol: "HDFCLIFE", yf: "HDFCLIFE.NS", name: "HDFC Life"}
+      - {symbol: "HINDALCO", yf: "HINDALCO.NS", name: "Hindalco Industries"}
+      - {symbol: "HINDUNILVR", yf: "HINDUNILVR.NS", name: "Hindustan Unilever"}
+      - {symbol: "ICICIBANK", yf: "ICICIBANK.NS", name: "ICICI Bank"}
+      - {symbol: "INDIGO", yf: "INDIGO.NS", name: "InterGlobe Aviation (IndiGo)"}
+      - {symbol: "ITC", yf: "ITC.NS", name: "ITC"}
+      - {symbol: "JIOFIN", yf: "JIOFIN.NS", name: "Jio Financial Services"}
+      - {symbol: "JSWSTEEL", yf: "JSWSTEEL.NS", name: "JSW Steel"}
+      - {symbol: "KOTAKBANK", yf: "KOTAKBANK.NS", name: "Kotak Mahindra Bank"}
+      - {symbol: "LT", yf: "LT.NS", name: "Larsen & Toubro"}
+      - {symbol: "M&M", yf: "M&M.NS", name: "Mahindra & Mahindra"}
+      - {symbol: "MARUTI", yf: "MARUTI.NS", name: "Maruti Suzuki"}
+      - {symbol: "MAXHEALTH", yf: "MAXHEALTH.NS", name: "Max Healthcare"}
+      - {symbol: "NESTLEIND", yf: "NESTLEIND.NS", name: "Nestle India"}
+      - {symbol: "NTPC", yf: "NTPC.NS", name: "NTPC"}
+      - {symbol: "ONGC", yf: "ONGC.NS", name: "Oil and Natural Gas Corporation"}
+      - {symbol: "POWERGRID", yf: "POWERGRID.NS", name: "Power Grid"}
+      - {symbol: "SBILIFE", yf: "SBILIFE.NS", name: "SBI Life Insurance"}
+      - {symbol: "SHRIRAMFIN", yf: "SHRIRAMFIN.NS", name: "Shriram Finance"}
+      - {symbol: "SBIN", yf: "SBIN.NS", name: "State Bank of India"}
+      - {symbol: "SUNPHARMA", yf: "SUNPHARMA.NS", name: "Sun Pharma"}
+      - {symbol: "TATACONSUM", yf: "TATACONSUM.NS", name: "Tata Consumer Products"}
+      - {symbol: "TATASTEEL", yf: "TATASTEEL.NS", name: "Tata Steel"}
+      - {symbol: "TECHM", yf: "TECHM.NS", name: "Tech Mahindra"}
+      - {symbol: "TITAN", yf: "TITAN.NS", name: "Titan Company"}
+      - {symbol: "TRENT", yf: "TRENT.NS", name: "Trent"}
+      - {symbol: "ULTRACEMCO", yf: "ULTRACEMCO.NS", name: "UltraTech Cement"}
+      - {symbol: "WIPRO", yf: "WIPRO.NS", name: "Wipro"}
