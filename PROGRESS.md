@@ -3,7 +3,7 @@
 Where the project stands, what was decided and why, and what to do next. Read this with
 `CLAUDE.md` (rules, commands, gotchas) and `README.md` (usage) when resuming work.
 
-Last updated: 2026-09-24 (acknowledged-flags commit, after `5865308`).
+Last updated: 2026-09-24 (ValuePickr collector commit, after `4a49eb5`).
 
 ## Status at a glance
 
@@ -12,11 +12,11 @@ Last updated: 2026-09-24 (acknowledged-flags commit, after `5865308`).
 | 1 | Prices + technical indicators | Done |
 | 2 | News + sentiment | Done |
 | 3 | NSE/BSE filings (quarterly results) | Done: all 80 XBRL files (8 quarters × standalone/consolidated × 5 stocks) imported by hand; flags reviewed |
-| 4 | Social media signals | Not started |
+| 4 | Social media signals | ValuePickr collector built and tested, not yet run (topic IDs await confirmation); Reddit awaits API approval |
 | 5 | Signals & backtesting | Not started |
 | 6 | Scheduling, digests, Telegram alerts | Scheduling + macOS failure notifications done; digests and Telegram not started |
 
-- Tests: 332 passing (`uv run pytest`), ruff clean.
+- Tests: 369 passing (`uv run pytest`), ruff clean.
 - Watchlist (`config/watchlist.yaml`): RELIANCE, TCS, HDFCBANK, INFY, TMPV.
 - Git: `main`, no remote pushes made from these sessions. `PROGRESS.md` is tracked.
 
@@ -48,7 +48,8 @@ not in git.
 | `f3f741e` | Bank XBRL tags verified on HDFC Bank FY27Q1; provisions metric added |
 | `c3fbb86` | QoQ/YoY notes across discontinued operations (TMPV demerger); fixed `--report` flag marker |
 | `5865308` | XBRL contexts use each context's declared reporting period (pre-2025 files mislabel the year-to-date context); HDFC Bank IR terms documented |
-| (next) | `config/acknowledged_flags.yaml`: reviewed flags log at INFO and show as reviewed; PROGRESS.md tracked |
+| `4a49eb5` | `config/acknowledged_flags.yaml`: reviewed flags log at INFO and show as reviewed; PROGRESS.md tracked |
+| (next) | Phase 4: ValuePickr collector, social linking/sentiment/`social_daily`, dashboard Social tab, `--skip-social`, principles 8–9 |
 
 ## Decisions and findings worth remembering
 
@@ -120,6 +121,27 @@ not in git.
 - YoY exists only from FY26Q2: no FY24 quarters are stored. Download FY24Q2–FY25Q1 files
   if longer YoY history is wanted.
 
+### Social (Phase 4)
+- Investigation (2026-09-24), from terms and docs only, no platform requests:
+  - Reddit: Data API Terms (rev. 20 Jul 2026) and Developer Terms (rev. 24 Mar 2026)
+    read verbatim. New API access needs manual approval under the Responsible Builder
+    Policy (Nov 2025); that page and the Data API Wiki return 403 to non-browser clients
+    and were only seen via search excerpts, so read them in a browser before applying.
+    PRAW 8.0.3 (Aug 2026) is current. Only the user can apply.
+  - ValuePickr: ToS (2018) silent on bots; posts CC BY-NC-SA 3.0; robots.txt disallows
+    /search and RSS only; Discourse default limit 50 req/10 s per IP.
+  - X: pay-per-use only (~$0.005/read), skip. StockTwits: API closed. YouTube: 10k
+    units/day, 30-day storage rule, later maybe. Telegram: bans AI/ML use of data, defer.
+- Decisions (approved by the user): dedicated topics link at 0.9 without the linker;
+  TMPV topic 1233 defaults only before 2025-10-14; ValuePickr text kept (the 30-day text
+  deletion is for Reddit only); deletion sync applies to both; authors stored only as a
+  keyed HMAC; dashboard shows no post text.
+- Topic IDs came from search results, not the forum (no requests before approval):
+  HDFCBANK 24141, RELIANCE 32873, INFY 8124, TMPV 1233, general 133414. TCS has no
+  dedicated thread; it relies on the linker in general and discovered topics.
+- A single bare "Tata Motors" in a PV sentence after the demerger scores 0.45 and doesn't
+  link (existing linker rule); posts naming JLR/TMPV do.
+
 ## Open items / next steps
 
 1. Each new quarter: download its standalone and consolidated XBRL for all 5 stocks into
@@ -133,8 +155,12 @@ not in git.
    warn.
 5. Optional: show provisions (and NII/NPA for banks) on the dashboard; they're already
    extracted.
-6. Phase 4 (social media signals) is the next roadmap phase. Phase 5 backtests must
-   filter news on `first_seen_at` and results on `filed_at`.
+6. Phase 4: confirm the ValuePickr topic IDs, set `confirmed: true` in
+   `config/social_sources.yaml`, add `SOCIAL_HASH_KEY` to `.env`, then run
+   `collectors.valuepickr` once by hand and check the log. Apply for Reddit API access if
+   wanted (see README). Phase 5 backtests must filter news and social posts on
+   `first_seen_at` and results on `filed_at`, and treat social data as
+   survivorship-biased (deleted posts are purged).
 
 ## Resuming
 

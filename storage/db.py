@@ -210,6 +210,104 @@ class NewsDaily(Base):
     computed_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, nullable=False)
 
 
+class SocialTopic(Base):
+    """A forum topic (or, later, a subreddit) we've fetched posts from.
+
+    `role`: dedicated (configured with a stock), general (configured, no stock) or
+    discovered (found in /latest.json because its title names a watchlist stock).
+    """
+
+    __tablename__ = "social_topics"
+
+    platform: Mapped[str] = mapped_column(String(32), primary_key=True)
+    topic_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    slug: Mapped[str | None] = mapped_column(String(255))
+    role: Mapped[str] = mapped_column(String(16), nullable=False)
+    fetched_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, nullable=False)
+    # Newest post fetched so far (stored or skipped): incremental runs start after it.
+    last_post_id: Mapped[int | None] = mapped_column(BigInteger)
+    last_post_number: Mapped[int | None] = mapped_column(Integer)
+
+
+class SocialPost(Base):
+    """A raw public post. No usernames or profile data are stored (see CLAUDE.md).
+
+    `id` is "<platform>:<platform post id>". `author_hmac` is a keyed hash of the
+    platform's user id (key SOCIAL_HASH_KEY in .env): it counts distinct authors without
+    identifying anyone. Rows are deleted when the post is deleted or hidden upstream.
+    `first_seen_at` is when we first had the post; backtests must filter on it.
+    """
+
+    __tablename__ = "social_posts"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    platform: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    topic_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    platform_post_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    post_number: Mapped[int | None] = mapped_column(Integer)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    text: Mapped[str | None] = mapped_column(Text)
+    author_hmac: Mapped[str | None] = mapped_column(String(64))
+    likes: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, nullable=False, index=True)
+    first_seen_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, nullable=False, index=True)
+    # Last time we confirmed the post still exists upstream (deletion sync).
+    checked_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, nullable=False, index=True)
+    # When linking last ran on this post; reset whenever its text changes.
+    linked_at: Mapped[dt.datetime | None] = mapped_column(UTCDateTime, index=True)
+
+
+class SocialMention(Base):
+    """A watchlist stock a post is about. `method`: thread (the post is in the stock's
+    dedicated topic) or linker (processing/entities.py matched it in the text)."""
+
+    __tablename__ = "social_mentions"
+
+    post_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(32), primary_key=True, index=True)
+    method: Mapped[str] = mapped_column(String(16), nullable=False)
+    matched_alias: Mapped[str | None] = mapped_column(String(255))
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+
+
+class SocialSentiment(Base):
+    """Sentiment of a post towards one stock, per model (processing/social.py)."""
+
+    __tablename__ = "social_sentiment"
+
+    post_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(32), primary_key=True)
+    model_name: Mapped[str] = mapped_column(String(128), primary_key=True)
+    model_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    label: Mapped[str] = mapped_column(String(16), nullable=False)
+    p_positive: Mapped[float] = mapped_column(Float, nullable=False)
+    p_negative: Mapped[float] = mapped_column(Float, nullable=False)
+    p_neutral: Mapped[float] = mapped_column(Float, nullable=False)
+    score: Mapped[float] = mapped_column(Float, nullable=False)  # p_positive - p_negative
+    computed_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, nullable=False)
+
+
+class SocialDaily(Base):
+    """Per-stock social activity and sentiment for one IST trading session."""
+
+    __tablename__ = "social_daily"
+
+    platform: Mapped[str] = mapped_column(String(32), primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(32), primary_key=True)
+    session_date: Mapped[dt.date] = mapped_column(Date, primary_key=True)
+    model_name: Mapped[str] = mapped_column(String(128), primary_key=True)
+    post_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    author_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    scored_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    mean_score: Mapped[float | None] = mapped_column(Float)
+    weighted_score: Mapped[float | None] = mapped_column(Float)
+    # When the last post in this session was first seen: a backtest may only use this
+    # row from that moment on.
+    latest_first_seen_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, nullable=False)
+    computed_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, nullable=False)
+
+
 class Filing(Base):
     """A raw exchange filing (announcement). Written by a filings collector or importer.
 
@@ -294,6 +392,11 @@ ARTICLES: Table = Article.__table__  # type: ignore[assignment]
 MENTIONS: Table = ArticleMention.__table__  # type: ignore[assignment]
 SENTIMENT: Table = ArticleSentiment.__table__  # type: ignore[assignment]
 NEWS_DAILY: Table = NewsDaily.__table__  # type: ignore[assignment]
+SOCIAL_TOPICS: Table = SocialTopic.__table__  # type: ignore[assignment]
+SOCIAL_POSTS: Table = SocialPost.__table__  # type: ignore[assignment]
+SOCIAL_MENTIONS: Table = SocialMention.__table__  # type: ignore[assignment]
+SOCIAL_SENTIMENT: Table = SocialSentiment.__table__  # type: ignore[assignment]
+SOCIAL_DAILY: Table = SocialDaily.__table__  # type: ignore[assignment]
 FILINGS: Table = Filing.__table__  # type: ignore[assignment]
 PENDING_ACTIONS: Table = PendingAction.__table__  # type: ignore[assignment]
 RESULTS: Table = Result.__table__  # type: ignore[assignment]

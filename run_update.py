@@ -1,4 +1,4 @@
-"""Daily update: prices, indicators, news and filings for the whole watchlist.
+"""Daily update: prices, indicators, news, filings and social posts for the watchlist.
 
 Steps:
   1. prices       collect daily OHLCV (collectors.prices), then check every stock has a
@@ -10,19 +10,21 @@ Steps:
                   (data/filings/inbox/) -> classify filings -> extract results
                   (skip with --skip-filings). There is no exchange filings collector:
                   NSE/BSE access is undecided (see README).
+  5. social       ValuePickr posts -> stock links -> sentiment -> daily aggregates
+                  (skip with --skip-social)
 
 Corporate actions are synced from config/corporate_actions.yaml before indicators are
 computed; symbols whose actions changed get a full indicator recompute.
 
 Every step runs even if an earlier one failed: indicators run for symbols whose price
 download failed (they keep their previous data), and news runs after price problems.
-Each news and filings step is isolated the same way, so a failing feed, file or model
+Each news, filings and social step is isolated the same way, so a failing feed, file or model
 never blocks the rest. Exit code is 0 on full success, 1 if anything failed.
 --failures-file writes the failed steps one per line (empty on success), for the
 scheduled wrapper's notification.
 
 Run with:  uv run python run_update.py [--full-indicators] [--skip-news] [--skip-filings]
-                                       [--failures-file PATH]
+                                       [--skip-social] [--failures-file PATH]
 """
 
 import argparse
@@ -109,6 +111,36 @@ def filings_steps(stocks: list[Stock]) -> list[tuple[str, Callable[[], None]]]:
     ]
 
 
+def social_steps(stocks: list[Stock]) -> list[tuple[str, Callable[[], None]]]:
+    """The social pipeline as (name, step) pairs, run in order (lazy imports, as for news)."""
+    from collectors import valuepickr
+    from config.news_sources import load_news_sources
+    from config.social_sources import load_social_sources
+    from processing import sentiment, social
+
+    news_config = load_news_sources()
+    social_config = load_social_sources()
+
+    def collect() -> None:
+        result = valuepickr.collect_all(social_config, stocks)
+        valuepickr.log_summary(result)
+        if result.failures:
+            raise StepError("; ".join(result.failures))
+
+    def score() -> None:
+        scorer = sentiment.FinbertScorer(news_config.sentiment_model,
+                                         news_config.sentiment_revision,
+                                         news_config.sentiment_batch_size)  # fmt: skip
+        social.score_pending(news_config, stocks, scorer)
+
+    return [
+        ("ValuePickr collection", collect),
+        ("social linking", lambda: social.link(stocks, social_config)),
+        ("social sentiment", score),
+        ("daily social aggregates", lambda: social.rebuild_daily(news_config)),
+    ]
+
+
 def run_steps(
     label: str, make_steps: Callable[[], list[tuple[str, Callable[[], None]]]]
 ) -> list[str]:
@@ -142,6 +174,11 @@ def run_filings(stocks: list[Stock]) -> list[str]:
     return run_steps("filings", lambda: filings_steps(stocks))
 
 
+def run_social(stocks: list[Stock]) -> list[str]:
+    """Run every social step, isolating failures. Returns the names of failed steps."""
+    return run_steps("social", lambda: social_steps(stocks))
+
+
 def check_session_bars(stocks: list[Stock], already_failed: set[str]) -> list[str]:
     """Stocks missing the latest session's bar, excluding ones whose download failed."""
     try:
@@ -156,6 +193,7 @@ def run(
     full_indicators: bool = False,
     skip_news: bool = False,
     skip_filings: bool = False,
+    skip_social: bool = False,
     failures_file: Path | None = None,
 ) -> int:
     """Run the full update pipeline and return a process exit code."""
@@ -163,12 +201,12 @@ def run(
     init_db()
     stocks = load_watchlist()
 
-    logger.info("Step 1/4: collecting prices for %d stock(s)", len(stocks))
+    logger.info("Step 1/5: collecting prices for %d stock(s)", len(stocks))
     price_summary = collect_all(stocks)
     log_summary(price_summary)
     missing_bars = check_session_bars(stocks, set(price_summary.failures))
 
-    logger.info("Step 2/4: computing indicators%s", " (full recompute)" if full_indicators else "")
+    logger.info("Step 2/5: computing indicators%s", " (full recompute)" if full_indicators else "")
     changed_actions = sync_actions_from_config()
     indicator_failures = process_all(
         [s.symbol for s in stocks], full=full_indicators, force_full=changed_actions
@@ -176,23 +214,31 @@ def run(
 
     news_failures: list[str] = []
     if skip_news:
-        logger.info("Step 3/4: news skipped (--skip-news)")
+        logger.info("Step 3/5: news skipped (--skip-news)")
     else:
-        logger.info("Step 3/4: news pipeline")
+        logger.info("Step 3/5: news pipeline")
         news_failures = run_news(stocks)
 
     filings_failures: list[str] = []
     if skip_filings:
-        logger.info("Step 4/4: filings skipped (--skip-filings)")
+        logger.info("Step 4/5: filings skipped (--skip-filings)")
     else:
-        logger.info("Step 4/4: filings pipeline")
+        logger.info("Step 4/5: filings pipeline")
         filings_failures = run_filings(stocks)
+
+    social_failures: list[str] = []
+    if skip_social:
+        logger.info("Step 5/5: social skipped (--skip-social)")
+    else:
+        logger.info("Step 5/5: social pipeline")
+        social_failures = run_social(stocks)
 
     failed = [f"prices: {symbol}" for symbol in sorted(price_summary.failures)]
     failed += [f"missing bar: {symbol}" for symbol in missing_bars]
     failed += [f"indicators: {symbol}" for symbol in sorted(indicator_failures)]
     failed += [f"news: {name}" for name in news_failures]
     failed += [f"filings: {name}" for name in filings_failures]
+    failed += [f"social: {name}" for name in social_failures]
     elapsed = time.monotonic() - started
     if failures_file is not None:
         failures_file.write_text("".join(f"{name}\n" for name in failed), encoding="utf-8")
@@ -213,6 +259,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--skip-news", action="store_true", help="skip the news pipeline")
     parser.add_argument("--skip-filings", action="store_true", help="skip the filings pipeline")
+    parser.add_argument("--skip-social", action="store_true", help="skip the social pipeline")
     parser.add_argument(
         "--failures-file",
         type=Path,
@@ -224,6 +271,7 @@ def main(argv: list[str] | None = None) -> int:
         full_indicators=args.full_indicators,
         skip_news=args.skip_news,
         skip_filings=args.skip_filings,
+        skip_social=args.skip_social,
         failures_file=args.failures_file,
     )
 

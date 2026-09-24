@@ -5,8 +5,9 @@ from Yahoo Finance, computes technical indicators, and shows them in a Streamlit
 
 **Current status:** Phases 1 (prices + indicators) and 2 (news + sentiment) are complete.
 Phase 3 (filings and results) works from a manual results inbox plus HDFC Bank's IR site;
-automated exchange access is on hold pending the exchanges' consent. Social signals,
-backtesting and Telegram alerts are planned. See [Roadmap](#roadmap).
+automated exchange access is on hold pending the exchanges' consent. Phase 4 (social
+signals) has a ValuePickr collector; Reddit waits on Reddit's API approval. Backtesting
+and Telegram alerts are planned. See [Roadmap](#roadmap).
 
 ## Setup
 
@@ -25,19 +26,22 @@ cp .env.example .env
 
 ## Running the update
 
-One command updates everything for every stock in the watchlist, in four stages:
+One command updates everything for every stock in the watchlist, in five stages:
 
 1. prices;
 2. indicators;
 3. the news pipeline (collect articles, extract text, group stories, link articles to
    stocks, score sentiment, build daily aggregates);
 4. the filings pipeline (HDFC Bank results PDFs from its IR site, import the results
-   inbox, classify filings, extract results).
+   inbox, classify filings, extract results);
+5. the social pipeline (ValuePickr posts, link them to stocks, score sentiment, build
+   daily aggregates).
 
 ```bash
 uv run python run_update.py                  # everything
 uv run python run_update.py --skip-news      # without the news pipeline
 uv run python run_update.py --skip-filings   # without the filings pipeline
+uv run python run_update.py --skip-social    # without the social pipeline
 ```
 
 A rejected inbox file makes the run exit with `1`; the reason is in
@@ -233,9 +237,46 @@ Where the files come from:
 uv run python -m processing.results --report   # last 8 quarters of revenue and net profit
 ```
 
+## Social signals (Phase 4)
+
+**ValuePickr** ([forum.valuepickr.com](https://forum.valuepickr.com)) is a Discourse forum.
+Its terms have no bot or API clause, its robots.txt allows the JSON pages we use, and
+user posts are licensed CC BY-NC-SA 3.0, so collection is for **personal, non-commercial
+use only**. `config/social_sources.yaml` lists the topics to follow:
+
+- **Dedicated topics** (HDFC Bank, RIL, Infosys, Tata Motors): every post is about that
+  stock. The Tata Motors thread counts as TMPV only for posts before the demerger
+  (14 Oct 2025); later posts go through the entity linker.
+- **General topics** ("Market news and updates") and topics found in `/latest.json`
+  whose title names a watchlist stock: posts are linked by the entity linker.
+
+Before the first run, check the topic IDs against the forum, set `confirmed: true`, and
+add a hash key to `.env`:
+
+```bash
+python -c "import secrets; print(secrets.token_hex(32))"   # put this in SOCIAL_HASH_KEY
+uv run python -m collectors.valuepickr                      # one collection pass
+uv run python -m processing.social --report                 # link, score, aggregate
+```
+
+What is stored: post id, topic, post number, link, creation time, text (quotes of other
+posts, @mentions, code and images removed), like count, and a keyed hash of the author's
+numeric id (to count distinct authors). **No usernames, names, avatars or profile links.**
+Posts deleted or hidden on ValuePickr are deleted here, with their derived rows, and
+edited posts are re-scored. The collector sends an honest User-Agent, makes one request
+every 5 seconds, and stops if the forum keeps answering HTTP 429.
+
+The dashboard's **Social** tab shows post and author counts, sentiment and links to the
+posts, never the post text.
+
+**Reddit** needs an app approved under Reddit's Responsible Builder Policy before any
+access. If approved, Reddit data may feed dashboards and rule-based signals but never a
+trained model, removed posts are deleted within 48 hours, and stored text after 30 days.
+
 ## Data use
 
-Article text is fetched and stored **locally, for personal analysis only**. It belongs
+Article text and forum posts are fetched and stored **locally, for personal analysis
+only**. It belongs
 to the publishers: don't republish it, share the database, or expose the text through a
 public service. Collection respects robots.txt and rate limits, and paywalled articles
 are never extracted.
@@ -288,7 +329,8 @@ New stocks get their full 5-year history on the next update.
 |---|---|---|
 | `DB_PATH` | SQLite database file (relative to project root) | `data/stock_intel.db` |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | Alerts (Phase 6) | — |
-| `REDDIT_CLIENT_ID`, `REDDIT_CLIENT_SECRET` | Social signals (Phase 4) | — |
+| `SOCIAL_HASH_KEY` | Keyed hash of social post authors (Phase 4) | — (required for ValuePickr) |
+| `REDDIT_CLIENT_ID`, `REDDIT_CLIENT_SECRET` | Reddit (Phase 4, awaiting approval) | — |
 | `ANTHROPIC_API_KEY` | News sentiment (Phase 2) | — |
 
 ## Project structure
@@ -305,23 +347,28 @@ New stocks get their full 5-year history on the next update.
 │   ├── acknowledged_flags.yaml # Results validation flags reviewed by hand
 │   ├── acknowledged_flags.py   # Loads and validates acknowledged flags
 │   ├── news_sources.yaml  # RSS feeds, Google News settings, rate limits
-│   └── news_sources.py    # Loads and validates news sources
+│   ├── news_sources.py    # Loads and validates news sources
+│   ├── social_sources.yaml  # ValuePickr topics and politeness settings
+│   └── social_sources.py    # Loads and validates social sources
 ├── collectors/            # Fetch and store RAW data only (no analysis)
 │   ├── prices.py          # Daily OHLCV from Yahoo Finance
 │   ├── news.py            # Raw articles from Google News + publisher RSS
 │   ├── result_files.py    # Results inbox importer + missing-files checklist
 │   ├── results_ir.py      # HDFC Bank results PDFs from its IR site
+│   ├── valuepickr.py      # Raw ValuePickr posts (Discourse JSON) + deletion sync
 │   └── article_text.py    # Article full text (trafilatura), robots.txt-aware
 ├── processing/            # Turn raw data into insight (no network calls)
 │   ├── adjustments.py     # Adjusted OHLC + unrecorded-gap detection
 │   ├── stories.py         # Groups syndicated article copies into stories
 │   ├── entities.py        # Links articles to the watchlist stocks they're about
 │   ├── sentiment.py       # FinBERT scoring + daily per-stock aggregates
+│   ├── social.py          # Links social posts to stocks, scores them, social_daily
 │   ├── filing_categories.py  # Filing types + announced corporate actions
 │   ├── results.py         # XBRL/PDF results extraction, QoQ/YoY, validation
 │   └── indicators.py      # RSI, MACD, SMA, EMA, Bollinger, ATR via pandas-ta
 ├── storage/
-│   └── db.py              # SQLAlchemy schema, upserts, reads
+│   ├── db.py              # SQLAlchemy schema, upserts, reads
+│   └── social.py          # Reads and writes for the social tables
 ├── utils/
 │   ├── http.py            # Per-domain rate limiter + retried GET
 │   ├── logging_setup.py   # Console + rotating file logging
@@ -351,6 +398,15 @@ New stocks get their full 5-year history on the next update.
   p_positive, p_negative, p_neutral, score, computed_at.
 - `news_daily` (`symbol, session_date, model_name`): story_count, article_count,
   mean_score, weighted_score, strong_negative_stories, latest_first_seen_at.
+- `social_topics` (`platform, topic_id`): title, slug, role (dedicated/general/discovered),
+  fetched_at, last_post_id, last_post_number.
+- `social_posts` (`id` = "platform:post id"): topic_id, post_number, url, text,
+  author_hmac, likes, created_at, first_seen_at, checked_at, linked_at. Deleted when the
+  post is deleted or hidden upstream.
+- `social_mentions` (`post_id, symbol`): method (thread/linker), matched_alias,
+  confidence. `social_sentiment` (`post_id, symbol, model_name`): as `article_sentiment`.
+- `social_daily` (`platform, symbol, session_date, model_name`): post_count,
+  author_count, scored_count, mean_score, weighted_score, latest_first_seen_at.
 - `filings` (`id`): exchange, exchange_id, symbol, filed_at, first_seen_at, category (the
   exchange's label), subject, description, attachment_url/path/sha256, duplicate_of,
   filing_type, filing_tags. Empty until a collector or importer exists.
@@ -413,6 +469,6 @@ uv run ruff format .       # format
 1. ✅ Prices + technical indicators
 2. ✅ News + sentiment
 3. NSE/BSE filings (quarterly results)
-4. Social media signals
+4. Social media signals (ValuePickr done; Reddit awaiting API approval)
 5. Signals & backtesting
 6. Scheduling, daily digests, Telegram alerts

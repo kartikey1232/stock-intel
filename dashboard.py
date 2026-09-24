@@ -1,4 +1,4 @@
-"""Streamlit dashboard: price chart, indicators, news sentiment and metrics per stock.
+"""Streamlit dashboard: price chart, indicators, news and social sentiment, metrics per stock.
 
 Run with:  uv run streamlit run dashboard.py
 """
@@ -31,6 +31,7 @@ from storage.db import (
     read_story_sources,
     trading_dates,
 )
+from storage.social import read_linked_posts, read_social_daily
 
 IST = ZoneInfo("Asia/Kolkata")
 CACHE_TTL_S = 300
@@ -53,6 +54,8 @@ FILING_BADGE_COLORS = {
 PENDING_WARN = ("upcoming", "undated", "needs_review")
 BADGE_THRESHOLD = 0.25  # story score at or beyond +/- this gets a positive/negative badge
 MAX_NEWS_ITEMS = 40
+MAX_SOCIAL_ITEMS = 40
+PLATFORM_NAMES = {"valuepickr": "ValuePickr"}
 
 
 @dataclass(frozen=True)
@@ -114,6 +117,19 @@ def cached_news(symbol: str, model_name: str) -> pd.DataFrame:
     articles = read_stock_news(symbol, model_name, LINK_THRESHOLD)
     story_ids = articles["story_id"].dropna().unique().tolist()
     return news_items(articles, read_story_sources(story_ids), TradingCalendar(trading_dates()))
+
+
+@st.cache_data(ttl=CACHE_TTL_S, show_spinner=False)
+def cached_social_daily(symbol: str, model_name: str) -> pd.DataFrame:
+    """social_daily rows for `symbol`, cached."""
+    return read_social_daily(model_name, symbol)
+
+
+@st.cache_data(ttl=CACHE_TTL_S, show_spinner="Loading social posts…")
+def cached_social_posts(symbol: str, model_name: str) -> pd.DataFrame:
+    """Posts linked to `symbol` (links and scores only, no text), cached."""
+    posts = read_linked_posts(model_name, LINK_THRESHOLD, symbol)
+    return social_items(posts, TradingCalendar(trading_dates()))
 
 
 @st.cache_data(ttl=CACHE_TTL_S, show_spinner=False)
@@ -274,6 +290,43 @@ def news_items(
         for story, src in zip(reps.index, reps["source"], strict=True)
     ]
     return reps.reset_index().sort_values("news_time", ascending=False).reset_index(drop=True)
+
+
+def social_items(posts: pd.DataFrame, calendar: TradingCalendar) -> pd.DataFrame:
+    """Linked posts, newest first, with `post_time` (IST-aware) and `session_date`."""
+    if posts.empty:
+        return posts.assign(post_time=[], session_date=[])
+    df = posts.copy()
+    df["post_time"] = [
+        news_time(c, f) for c, f in zip(df["created_at"], df["first_seen_at"], strict=True)
+    ]
+    df["session_date"] = [session_for(t, calendar) for t in df["post_time"]]
+    return df.sort_values("post_time", ascending=False).reset_index(drop=True)
+
+
+def social_summary(items: pd.DataFrame, end: dt.date, days: int) -> dict[str, float | None]:
+    """Posts, distinct authors and confidence-weighted score over `days` sessions to `end`."""
+    if items.empty:
+        return {"posts": 0, "authors": 0, "score": None}
+    sessions = pd.Series(items["session_date"])
+    rows = items[(sessions > end - dt.timedelta(days=days)) & (sessions <= end)]
+    scored = rows[rows["score"].notna()]
+    score = (
+        float((scored["score"] * scored["confidence"]).sum() / scored["confidence"].sum())
+        if not scored.empty
+        else None
+    )
+    return {"posts": len(rows), "authors": int(rows["author_hmac"].nunique()), "score": score}
+
+
+def post_label(item: pd.Series) -> str:
+    """Link text for a post: platform, topic title and post number (never post text)."""
+    platform = PLATFORM_NAMES.get(item["platform"], item["platform"])
+    topic = (
+        item["topic_title"] if isinstance(item["topic_title"], str) else f"topic {item['topic_id']}"
+    )
+    number = f" #{int(item['post_number'])}" if pd.notna(item["post_number"]) else ""
+    return f"{platform} · {topic}{number}"
 
 
 def sentiment_badge(score: float | None) -> str:
@@ -662,6 +715,56 @@ def render_news_list(items: pd.DataFrame, start: dt.date, end: dt.date) -> None:
         st.caption(f"Showing the latest {MAX_NEWS_ITEMS} of {len(in_range)} stories.")
 
 
+def render_social(
+    items: pd.DataFrame, daily: pd.DataFrame, start: dt.date, end: dt.date, today: dt.date
+) -> None:
+    """Social activity: counts, sentiment and links to posts. Post text is never shown."""
+    st.subheader("Social")
+    if items.empty:
+        st.caption(
+            "No linked social posts yet. ValuePickr posts are collected by "
+            "`uv run python run_update.py` once the topics in config/social_sources.yaml "
+            "are confirmed."
+        )
+        return
+    week, month = social_summary(items, today, 7), social_summary(items, today, 30)
+    cols = st.columns(4)
+    cols[0].metric("Posts 7d", week["posts"], delta=f"{month['posts']} in 30d", delta_color="off",
+                   border=True)  # fmt: skip
+    cols[1].metric("Authors 7d", week["authors"], delta=f"{month['authors']} in 30d",
+                   delta_color="off", border=True)  # fmt: skip
+    for col, label, value in ((cols[2], "Sentiment 7d", week["score"]),
+                              (cols[3], "Sentiment 30d", month["score"])):  # fmt: skip
+        col.metric(label, "—" if value is None else f"{value:+.2f}", border=True,
+                   help="Confidence-weighted FinBERT score (-1 to +1) of the sentences "
+                   "about this stock.")  # fmt: skip
+
+    if not daily.empty:
+        sessions = pd.to_datetime(daily["session_date"])
+        view = daily[(sessions.dt.date >= start) & (sessions.dt.date <= end)]
+        if not view.empty:
+            chart = pd.DataFrame(
+                {"posts": view["post_count"].values, "authors": view["author_count"].values},
+                index=pd.to_datetime(view["session_date"]),
+            )
+            st.bar_chart(chart, stack=False)
+
+    in_range = items[(items["session_date"] >= start) & (items["session_date"] <= end)]
+    for item in in_range.head(MAX_SOCIAL_ITEMS).to_dict("records"):
+        when = pd.Timestamp(item["post_time"]).tz_convert(IST)
+        how = "thread" if item["method"] == "thread" else f"mentioned ({item['confidence']:.2f})"
+        st.markdown(
+            f"[{escape_markdown(post_label(pd.Series(item)))}]({item['url']})  \n"
+            f"{when:%d %b %Y, %H:%M} IST · {how} · {sentiment_badge(item['score'])}"
+        )
+    if len(in_range) > MAX_SOCIAL_ITEMS:
+        st.caption(f"Showing the latest {MAX_SOCIAL_ITEMS} of {len(in_range)} posts.")
+    st.caption(
+        "Post text isn't shown: links open the post on ValuePickr. ValuePickr content is "
+        "CC BY-NC-SA 3.0 and is stored for personal, non-commercial analysis only."
+    )
+
+
 def render_pending_actions(pending: pd.DataFrame) -> None:
     """Warning banner for announced corporate actions not yet in corporate_actions.yaml."""
     for a in pending.itertuples():
@@ -845,9 +948,19 @@ def main() -> None:
             icon="ℹ️",
         )
 
-    news_tab, filings_tab, results_tab = st.tabs(["News", "Filings", "Results"])
+    news_tab, social_tab, filings_tab, results_tab = st.tabs(
+        ["News", "Social", "Filings", "Results"]
+    )
     with news_tab:
         render_news_list(cached_news(stock.symbol, model_name), start, end)
+    with social_tab:
+        render_social(
+            cached_social_posts(stock.symbol, model_name),
+            cached_social_daily(stock.symbol, model_name),
+            start,
+            end,
+            max(last_price_date, today_ist()),
+        )
     with filings_tab:
         render_filings(filings, start, end)
     with results_tab:

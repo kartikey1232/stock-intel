@@ -28,7 +28,7 @@ uv add <pkg>               # add a dependency (never edit pyproject by hand for 
 uv run pytest              # run all tests
 uv run pytest path/to/test_file.py::test_name   # run a single test
 uv run ruff check . && uv run ruff format .     # lint + format
-uv run python run_update.py [--skip-news] [--skip-filings] [--failures-file PATH]  # prices -> indicators -> news -> filings
+uv run python run_update.py [--skip-news] [--skip-filings] [--skip-social] [--failures-file PATH]  # prices -> indicators -> news -> filings -> social
 uv run python -m collectors.prices              # prices only
 uv run python -m processing.indicators [--full] # indicators only
 uv run python -m collectors.news                # news articles (Google News + publisher RSS)
@@ -42,6 +42,8 @@ uv run python -m collectors.result_files import     # import results files from 
 uv run python -m collectors.result_files checklist  # which quarters x bases are missing, and where from
 uv run python -m collectors.results_ir          # HDFC Bank results PDFs from its IR site
 uv run python -m processing.results --report    # rebuild results table; last 8 quarters
+uv run python -m collectors.valuepickr          # ValuePickr posts (needs confirmed: true + SOCIAL_HASH_KEY)
+uv run python -m processing.social [--full] [--report]  # link posts, score, rebuild social_daily
 uv run streamlit run dashboard.py               # launch the dashboard
 ```
 
@@ -221,6 +223,29 @@ uv run streamlit run dashboard.py               # launch the dashboard
 - Moneycontrol RSS is frozen (newest items 2024) and Business Standard RSS returns 403 to
   non-browser clients; both are excluded from `config/news_sources.yaml`. Don't spoof a
   browser User-Agent to get around blocks.
+- Social (Phase 4): only ValuePickr so far (`collectors/valuepickr.py`, Discourse JSON).
+  It makes no requests until `confirmed: true` in `config/social_sources.yaml` and needs
+  `SOCIAL_HASH_KEY` in .env. Every run re-reads robots.txt and checks each URL against it
+  (never use /search or RSS: robots.txt disallows them); 1 request per 5 s; a 429 waits
+  Retry-After once (if <= `max_retry_after_s`), then the run stops. Incremental runs
+  fetch posts after the topic's `last_post_id`; the first run takes the newest
+  `backfill_posts`. Discovered topics come from /latest.json by title (stock news terms).
+- Social deletion sync: posts missing from a topic's stream, or deleted/withdrawn/hidden
+  on re-check (`recheck_posts` oldest-checked per run), are hard-deleted with their
+  mentions and sentiment; a topic returning 403/404/410 loses all its posts. Edited posts
+  get the new text and are re-linked. So stored history is what's still visible today,
+  not what was visible then: Phase 5 backtests must treat social data as
+  survivorship-biased, and filter on `first_seen_at`.
+- Social text cleaning drops quotes of other posts, @mentions, code, images and oneboxes
+  (other people's words and names). Posts in a stock's dedicated topic link with
+  confidence 0.9 (`method = thread`); general and discovered topics use the entity
+  linker on the post text. TMPV's topic 1233 defaults to TMPV only for posts before
+  2025-10-14; after that a single bare "Tata Motors" in a PV sentence scores 0.45 (below
+  the link threshold, like a single conditional mention in a news body).
+- `social_daily` counts linked posts and distinct `author_hmac`s per IST session (same
+  session rules as news_daily); mean/weighted scores cover scored posts only and are
+  NULL when none were scored. The dashboard's Social tab shows counts, scores and links,
+  never post text.
 - pandas-ta 0.4 emits RSI from bar 2; `processing/indicators.py` masks the warm-up.
   pandas-ta is a beta release pinned in `uv.lock`, and it caps numpy at 2.2 via numba.
 - Tests must never hit the network or the real database; use a tmp SQLite engine and
@@ -249,6 +274,16 @@ uv run streamlit run dashboard.py               # launch the dashboard
    investigation or debugging. Reading their terms of use or public documentation pages
    is fine. Exchange data comes only from files the user downloads by hand into
    `data/filings/inbox/`.
+8. **Social data is personal and non-commercial.** ValuePickr content is licensed CC
+   BY-NC-SA 3.0: store and analyse it for personal, non-commercial use only; if this
+   becomes a product, get ValuePickr's permission first. Never store usernames, display
+   names, avatars or profile links (authors only as a keyed HMAC), never display or share
+   post text, and delete posts that are deleted or hidden upstream.
+9. **Reddit data is never used in fitted models.** No Reddit access until Reddit approves
+   an app under its Responsible Builder Policy. Once approved: Reddit content and anything
+   derived from it may feed rule-based signals and dashboards, but never a trained or
+   fitted model (Developer Terms §4.2); delete posts removed on Reddit promptly (target
+   48 h) with their derived rows, and delete stored Reddit text after 30 days.
 
 ## Code style
 
