@@ -78,7 +78,8 @@ STRIP_XPATH = (
     " | //div[contains(@class, 'lightbox-wrapper')] | //div[contains(@class, 'poll')]"
 )
 BLOCK_TAGS = ("p", "li", "h1", "h2", "h3", "h4", "h5", "h6", "div", "tr", "br", "hr")
-SPACE_RE = re.compile(r"[ \t ]+")
+SPACE_RE = re.compile(r"[ \t\u00a0]+")
+LINK_OPEN, LINK_CLOSE = "\u27e6", "\u27e7"  # ⟦link text⟧ in stored post text
 
 
 class NotConfiguredError(RuntimeError):
@@ -134,12 +135,20 @@ class RunResult:
 
 
 def clean_cooked(cooked: str | None) -> str | None:
-    """Plain text of a post's rendered HTML, without quotes, mentions, code or images."""
+    """Plain text of a post's rendered HTML, without quotes, mentions, code or images.
+
+    Link text is kept but wrapped in LINK_OPEN/LINK_CLOSE, so processing can tell the
+    poster's own words from pasted links and link titles.
+    """
     if not cooked or not cooked.strip():
         return None
     root = lxml.html.fragment_fromstring(cooked, create_parent="div")
     for element in root.xpath(STRIP_XPATH):
         element.drop_tree()
+    for link in list(root.iter("a")):
+        label = SPACE_RE.sub(" ", link.text_content()).strip()
+        link.tail = (f"{LINK_OPEN}{label}{LINK_CLOSE}" if label else "") + (link.tail or "")
+        link.drop_tree()
     for element in root.iter(*BLOCK_TAGS):
         element.tail = "\n" + (element.tail or "")
     lines = (SPACE_RE.sub(" ", line).strip() for line in root.text_content().splitlines())

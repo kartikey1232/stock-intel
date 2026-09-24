@@ -13,6 +13,7 @@ from config.loader import load_watchlist
 from config.news_sources import load_news_sources
 from config.social_sources import (
     DEFAULT_SOCIAL_SOURCES_PATH,
+    ScoringConfig,
     SocialSourcesError,
     Topic,
     ValuePickrConfig,
@@ -111,6 +112,47 @@ def test_discovered_topic_posts_go_through_the_entity_linker() -> None:
     assert links(DISCOVERED, "Markets were flat today.", dt.date(2026, 9, 1)) == {}
 
 
+# --- post preparation --------------------------------------------------------------
+
+SCORING = ScoringConfig(min_words=6, headline_sources=("The Economic Times", "Mint"))
+
+
+def test_link_text_urls_and_pasted_headlines_are_not_scored() -> None:
+    text = (
+        "IT slumps, but no need to get glum - The Economic Times IT slumps, but no need "
+        "to get glum - The Economic Times\nStill, Infosys results were solid this quarter.\n"
+        "See \u27e6this Infosys note\u27e7 and https://example.com/infy"
+    )
+    post = social.prepare_post(text, SCORING)
+    assert post.score_text == "Still, Infosys results were solid this quarter.\nSee and"
+    assert post.kind == "opinion"
+    assert "this Infosys note" in post.link_text and "glum" in post.link_text  # for linking
+
+
+@pytest.mark.parametrize(
+    ("text", "kind"),
+    [
+        ("Totally Agreed.", "short"),
+        ("\u27e6https://www.bloomberg.com/news/x\u27e7", "share"),
+        ("Bloomberg also covers this\nhttps://www.bloomberg.com/news/x", "share"),
+        ("Tata Motors weighs dividend after turnaround | Mint A report too.", "share"),
+        ("Margins held up well and deposits grew faster than loans.", "opinion"),
+    ],
+)
+def test_post_kinds(text: str, kind: str) -> None:
+    assert social.prepare_post(text, SCORING).kind == kind
+
+
+def test_line_breaks_split_sentences_only_where_a_sentence_ends() -> None:
+    text = "How much will be the impact on exchanges as\nvolumes rise?\nQ3 Highlights\nGood."
+    assert social.join_broken_lines(text) == (
+        "How much will be the impact on exchanges as volumes rise?\nQ3 Highlights Good."
+    )
+    assert social.leading_sentences(social.join_broken_lines(text), 1) == [
+        "How much will be the impact on exchanges as volumes rise?"
+    ]
+
+
 # --- scoring input -----------------------------------------------------------------
 
 
@@ -156,14 +198,20 @@ def test_link_score_and_aggregate(engine: Engine) -> None:
     upsert_topic({"platform": "valuepickr", "topic_id": "24141", "title": "HDFC Bank thread",
                   "role": "dedicated", "fetched_at": dt.datetime.now(dt.UTC)})  # fmt: skip
     monday = dt.datetime(2026, 9, 21, 10, tzinfo=IST)
-    add_post(1, 24141, "Deposit growth is strong.", monday, "a")
-    add_post(2, 24141, "Asset quality worries me.", monday + dt.timedelta(hours=1), "a")
-    add_post(3, 24141, "A strong quarter overall.", monday + dt.timedelta(hours=2), "b")
-    add_post(4, 24141, "Late post: strong numbers.", dt.datetime(2026, 9, 21, 17, tzinfo=IST), "c")
-    add_post(5, DISCOVERED, "Infosys looks strong here.", monday, "d")
-    add_post(6, DISCOVERED, "Nothing about our stocks.", monday, "e")
+    add_post(1, 24141, "Deposit growth this quarter is strong.", monday, "a")
+    add_post(
+        2, 24141, "Asset quality this quarter worries me.", monday + dt.timedelta(hours=1), "a"
+    )
+    add_post(3, 24141, "A strong quarter overall, I think.", monday + dt.timedelta(hours=2), "b")
+    add_post(4, 24141, "Late post: strong numbers from the bank.",
+             dt.datetime(2026, 9, 21, 17, tzinfo=IST), "c")  # fmt: skip
+    add_post(5, DISCOVERED, "Infosys looks strong here to me.", monday, "d")
+    add_post(6, DISCOVERED, "Nothing about our stocks in this post.", monday, "e")
+    add_post(7, 24141, "Totally agreed.", monday, "f")  # short reply
+    add_post(8, 24141, "HDFC Bank raises $1.75 billion | Company Business News\n"
+             "\u27e6https://www.moneycontrol.com/x\u27e7", monday, "g")  # fmt: skip
 
-    assert social.link(STOCKS, CONFIG) == 6
+    assert social.link(STOCKS, CONFIG) == 8
     assert social.link(STOCKS, CONFIG) == 0  # already linked
     scorer = FakeScorer()
     assert social.score_pending(NEWS_CONFIG, STOCKS, scorer) == 5
@@ -173,7 +221,10 @@ def test_link_score_and_aggregate(engine: Engine) -> None:
     rows = social.aggregate_daily(read_linked_posts("fake/model", 0.5), calendar, "fake/model")
     daily = {(r["symbol"], r["session_date"]): r for r in rows}
     hdfc = daily[("HDFCBANK", dt.date(2026, 9, 21))]
-    assert (hdfc["post_count"], hdfc["author_count"], hdfc["scored_count"]) == (3, 2, 3)
+    # The short reply and the share count as activity but aren't scored.
+    assert (hdfc["post_count"], hdfc["author_count"], hdfc["scored_count"]) == (5, 4, 3)
+    kinds = read_linked_posts("fake/model", 0.5).set_index("post_id")["post_kind"]
+    assert (kinds["valuepickr:7"], kinds["valuepickr:8"]) == ("short", "share")
     assert hdfc["mean_score"] == pytest.approx((0.85 - 0.85 + 0.85) / 3)
     assert daily[("HDFCBANK", dt.date(2026, 9, 22))]["post_count"] == 1  # after 15:30 IST
     assert daily[("INFY", dt.date(2026, 9, 21))]["author_count"] == 1
@@ -187,7 +238,8 @@ def test_link_score_and_aggregate(engine: Engine) -> None:
 def test_dashboard_items_have_links_and_scores_but_no_text(engine: Engine) -> None:
     upsert_topic({"platform": "valuepickr", "topic_id": "24141", "title": "HDFC Bank thread",
                   "role": "dedicated", "fetched_at": dt.datetime.now(dt.UTC)})  # fmt: skip
-    add_post(1, 24141, "Secret post text strong.", dt.datetime(2026, 9, 21, 10, tzinfo=IST), "a")
+    add_post(1, 24141, "Secret post text, strong and long enough.",
+             dt.datetime(2026, 9, 21, 10, tzinfo=IST), "a")  # fmt: skip
     social.link(STOCKS, CONFIG)
     social.score_pending(NEWS_CONFIG, STOCKS, FakeScorer())
     posts = read_linked_posts("fake/model", 0.5, "HDFCBANK")

@@ -149,6 +149,16 @@ def test_cooked_html_loses_quotes_mentions_code_and_images() -> None:
         assert leaked not in text
 
 
+def test_link_text_is_marked_for_processing() -> None:
+    cooked = (
+        '<p>Read <a href="https://x.com/a">this HDFC note</a>.<br>'
+        '<a href="https://m.com/b">https://m.com/b</a></p>'
+    )
+    assert vp.clean_cooked(cooked) == (
+        "Read \u27e6this HDFC note\u27e7.\n\u27e6https://m.com/b\u27e7"
+    )
+
+
 def test_parse_post_stores_no_identity_only_a_keyed_hash() -> None:
     now = dt.datetime(2026, 9, 24, tzinfo=dt.UTC)
     row = vp.parse_post(post(7, 3), 10, "infy", BASE, KEY, now)

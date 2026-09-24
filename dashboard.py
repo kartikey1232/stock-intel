@@ -329,6 +329,16 @@ def post_label(item: pd.Series) -> str:
     return f"{platform} · {topic}{number}"
 
 
+def post_badge(item: dict) -> str:
+    """Badge for a social post: its sentiment, or why it isn't scored."""
+    kind = item.get("post_kind") or "opinion"
+    if kind == "share":
+        return ":gray-badge[shared link/headline]"
+    if kind == "short":
+        return ":gray-badge[short reply]"
+    return sentiment_badge(item["score"])
+
+
 def sentiment_badge(score: float | None) -> str:
     """Streamlit markdown badge for a story score."""
     if score is None or pd.isna(score):
@@ -755,7 +765,7 @@ def render_social(
         how = "thread" if item["method"] == "thread" else f"mentioned ({item['confidence']:.2f})"
         st.markdown(
             f"[{escape_markdown(post_label(pd.Series(item)))}]({item['url']})  \n"
-            f"{when:%d %b %Y, %H:%M} IST · {how} · {sentiment_badge(item['score'])}"
+            f"{when:%d %b %Y, %H:%M} IST · {how} · {post_badge(item)}"
         )
     if len(in_range) > MAX_SOCIAL_ITEMS:
         st.caption(f"Showing the latest {MAX_SOCIAL_ITEMS} of {len(in_range)} posts.")

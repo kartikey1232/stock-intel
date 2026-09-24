@@ -268,6 +268,14 @@ Posts deleted or hidden on ValuePickr are deleted here, with their derived rows,
 edited posts are re-scored. The collector sends an honest User-Agent, makes one request
 every 5 seconds, and stops if the forum keeps answering HTTP 429.
 
+Only a post's own words are scored: link text, URLs and pasted news headlines are
+removed first (a headline would duplicate the news signal). Posts left with fewer than 6
+words are counted as activity (a *share* or a *short reply*) but not scored.
+
+Social history is uneven: each topic's first fetch took only its newest 200 posts, so
+coverage starts years apart by stock, and deleted posts are removed. Treat it as recent
+context for one stock, not as backtest history or a cross-stock comparison.
+
 The dashboard's **Social** tab shows post and author counts, sentiment and links to the
 posts, never the post text.
 

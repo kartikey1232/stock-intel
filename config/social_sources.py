@@ -54,6 +54,46 @@ class ValuePickrConfig:
         return next((t for t in self.topics if t.id == topic_id), None)
 
 
+@dataclass(frozen=True)
+class ScoringConfig:
+    """Which social posts get sentiment scores (processing/social.py)."""
+
+    min_words: int = 6
+    headline_sources: tuple[str, ...] = ()
+
+
+def load_social_scoring(path: Path = DEFAULT_SOCIAL_SOURCES_PATH) -> ScoringConfig:
+    """Load the `scoring` section of the social sources file (defaults if absent).
+
+    Raises:
+        SocialSourcesError: if the file is missing or the section is malformed.
+    """
+    raw = _read(path)
+    scoring = raw.get("scoring") or {}
+    if not isinstance(scoring, dict):
+        raise SocialSourcesError(f"{path}: 'scoring' must be a mapping")
+    sources = scoring.get("headline_sources") or []
+    if not isinstance(sources, list) or not all(isinstance(s, str) and s for s in sources):
+        raise SocialSourcesError(f"{path}: scoring.headline_sources must be a list of names")
+    min_words = int(scoring.get("min_words", 6))
+    if min_words < 1:
+        raise SocialSourcesError(f"{path}: scoring.min_words must be at least 1")
+    return ScoringConfig(min_words=min_words, headline_sources=tuple(sources))
+
+
+def _read(path: Path) -> dict[str, Any]:
+    """The parsed YAML mapping in `path`."""
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise SocialSourcesError(f"Social sources file not found: {path}") from exc
+    except yaml.YAMLError as exc:
+        raise SocialSourcesError(f"{path}: invalid YAML: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise SocialSourcesError(f"{path}: expected a mapping at the top level")
+    return raw
+
+
 def load_social_sources(path: Path = DEFAULT_SOCIAL_SOURCES_PATH) -> ValuePickrConfig:
     """Load and validate the ValuePickr section of the social sources file.
 
@@ -61,13 +101,7 @@ def load_social_sources(path: Path = DEFAULT_SOCIAL_SOURCES_PATH) -> ValuePickrC
         SocialSourcesError: if the file is missing or invalid, a topic is malformed, or
             topic ids are duplicated.
     """
-    try:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except FileNotFoundError as exc:
-        raise SocialSourcesError(f"Social sources file not found: {path}") from exc
-    except yaml.YAMLError as exc:
-        raise SocialSourcesError(f"{path}: invalid YAML: {exc}") from exc
-    vp = (raw or {}).get("valuepickr")
+    vp = _read(path).get("valuepickr")
     if not isinstance(vp, dict):
         raise SocialSourcesError(f"{path}: expected a 'valuepickr' mapping")
     for key in ("base_url", "user_agent"):

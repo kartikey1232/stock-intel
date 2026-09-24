@@ -246,6 +246,19 @@ uv run streamlit run dashboard.py               # launch the dashboard
 - Social collector logs: every run logs how many /latest.json topics were checked and
   matched (even 0), and per topic how many requested posts weren't stored and why (not
   a regular post, deleted/hidden, no text after cleaning, not returned).
+- Social scoring (`processing/social.py`): link text (stored as `⟦…⟧` by the collector,
+  for posts fetched or re-checked since this rule; older text only gets URL and headline
+  removal), URLs and pasted headlines ("<headline> - The Economic Times", sources in
+  `config/social_sources.yaml` `scoring.headline_sources`) are removed before scoring;
+  they're kept for linking. A post then under `scoring.min_words` (6) words is a `share`
+  (it had links/headlines) or `short`; both count in post_count but aren't scored
+  (`social_mentions.post_kind`). Line breaks split sentences only after .!?…:; so
+  hard-wrapped lines are rejoined.
+- **Social history is uneven by stock and is recent context only.** Each topic's first
+  fetch took only its newest 200 posts (`backfill_posts`), so coverage starts in 2018
+  for INFY but 2024 for HDFCBANK, and posts deleted upstream are removed. Never use
+  social data as backtest history or to compare stocks with each other; use it only as
+  recent context for one stock.
 - `social_daily` counts linked posts and distinct `author_hmac`s per IST session (same
   session rules as news_daily); mean/weighted scores cover scored posts only and are
   NULL when none were scored. The dashboard's Social tab shows counts, scores and links,

@@ -44,3 +44,17 @@ valuepickr:
       title: "Tata Motors - On the way to world Automobile leader?"
       symbol: TMPV
       default_until: 2025-10-14
+
+# Scoring rules for processing/social.py (all platforms).
+scoring:
+  # Posts with fewer words than this (after removing shared links and headlines) count
+  # as activity but aren't scored ("Totally agreed.").
+  min_words: 6
+  # A line "<headline> - <source>" or "<headline> | <source>" is a pasted news headline:
+  # it duplicates the news signal, so it's removed before scoring.
+  headline_sources: [The Economic Times, Economic Times, ET Markets, ETMarkets,
+                     Company Business News, Moneycontrol, Mint, Livemint,
+                     Business Standard, The Hindu BusinessLine, BusinessLine, The Hindu,
+                     Financial Express, Business Today, CNBC-TV18, CNBC, NDTV Profit,
+                     Zee Business, Hindustan Times, The Times of India, Reuters,
+                     Bloomberg, BBG]

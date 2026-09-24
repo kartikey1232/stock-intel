@@ -154,7 +154,10 @@ def replace_social_mentions(
 def social_mentions_to_score(
     model_name: str, min_confidence: float, engine: Engine | None = None
 ) -> pd.DataFrame:
-    """Linked mentions (confidence >= min_confidence) not yet scored by `model_name`."""
+    """Linked opinion mentions (confidence >= min_confidence) not yet scored by `model_name`.
+
+    Shares and short replies (post_kind != opinion) are never scored.
+    """
     scored = select(SOCIAL_SENTIMENT.c.post_id).where(
         SOCIAL_SENTIMENT.c.model_name == model_name,
         SOCIAL_SENTIMENT.c.post_id == SOCIAL_MENTIONS.c.post_id,
@@ -171,6 +174,7 @@ def social_mentions_to_score(
         )
         .join(SOCIAL_POSTS, SOCIAL_POSTS.c.id == SOCIAL_MENTIONS.c.post_id)
         .where(SOCIAL_MENTIONS.c.confidence >= min_confidence)
+        .where(SOCIAL_MENTIONS.c.post_kind == "opinion")
         .where(~exists(scored))
         .order_by(SOCIAL_MENTIONS.c.post_id, SOCIAL_MENTIONS.c.symbol)
     )
@@ -204,6 +208,7 @@ def read_linked_posts(
             SOCIAL_MENTIONS.c.symbol,
             SOCIAL_MENTIONS.c.method,
             SOCIAL_MENTIONS.c.confidence,
+            SOCIAL_MENTIONS.c.post_kind,
             SOCIAL_POSTS.c.platform,
             SOCIAL_POSTS.c.topic_id,
             SOCIAL_POSTS.c.post_number,
@@ -231,7 +236,8 @@ def read_linked_posts(
     if symbol is not None:
         stmt = stmt.where(SOCIAL_MENTIONS.c.symbol == symbol)
     columns = [
-        "post_id", "symbol", "method", "confidence", "platform", "topic_id", "post_number",
+        "post_id", "symbol", "method", "confidence", "post_kind", "platform", "topic_id",
+        "post_number",
         "url", "author_hmac", "likes", "created_at", "first_seen_at", "topic_title", "score",
     ]  # fmt: skip
     with (engine or db.get_engine()).connect() as conn:

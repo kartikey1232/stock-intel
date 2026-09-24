@@ -10,6 +10,13 @@ mention would otherwise score 0.45, below the link threshold, like a passing men
 a long news body. Posts in general topics (configured without a stock, or
 discovered via /latest.json) always go through the entity linker, on the post text only.
 
+Post kinds. Link text (marked by the collector), URLs and pasted news headlines
+("<headline> - The Economic Times", sources in config/social_sources.yaml) are removed
+before scoring: a headline duplicates the news signal. A post left with fewer than
+`scoring.min_words` words is a share (if it had links or headlines) or a short reply;
+both count as activity (post_count) but aren't scored. Line breaks count as sentence
+boundaries only after sentence-ending punctuation.
+
 Scoring. As for news: only the sentences that mention the stock (at most
 `sentiment.max_sentences` from config/news_sources.yaml). A post linked by its thread
 that never names the stock ("results were decent") is scored on its first sentences.
@@ -25,7 +32,10 @@ Run with:  uv run python -m processing.social [--full] [--report]
 import argparse
 import datetime as dt
 import logging
+import re
 import sys
+from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -33,7 +43,13 @@ import pandas as pd
 
 from config.loader import Stock, load_watchlist
 from config.news_sources import NewsConfig, load_news_sources
-from config.social_sources import THREAD_CONFIDENCE, ValuePickrConfig, load_social_sources
+from config.social_sources import (
+    THREAD_CONFIDENCE,
+    ScoringConfig,
+    ValuePickrConfig,
+    load_social_scoring,
+    load_social_sources,
+)
 from processing.entities import (
     LINK_THRESHOLD,
     SENTENCE_BREAK_RE,
@@ -68,6 +84,74 @@ VALUEPICKR = "valuepickr"
 # In a stock's own dedicated topic (past its default_until), a conditional-alias match
 # that met its context rule ("Tata Motors" + a PV term) is about that stock.
 OWN_THREAD_CONDITIONAL = 0.6
+LINK_RE = re.compile("\u27e6([^\u27e7]*)\u27e7")  # ⟦link text⟧, marked by the collector
+URL_RE = re.compile(r"\(?\b(?:https?://|www\.)\S+\)?")
+# A line break is a sentence boundary only after sentence-ending punctuation.
+SENTENCE_END_RE = re.compile(r"[.!?…:;][\"'”’)\]]*$")
+SPACES_RE = re.compile(r"\s+")
+
+
+@dataclass(frozen=True)
+class PreparedPost:
+    """A post's text for linking and for scoring, and its kind.
+
+    `link_text` keeps link text and headlines (a shared headline still says which stock the
+    post is about). `score_text` drops them: pasted headlines duplicate the news signal.
+    `kind`: opinion, share (only links/headlines plus under min_words of its own) or short.
+    """
+
+    link_text: str
+    score_text: str
+    kind: str
+
+
+@lru_cache(maxsize=8)
+def headline_regex(sources: tuple[str, ...]) -> re.Pattern[str] | None:
+    """Matches "<headline> - <source>" / "<headline> | <source>" from a line's start."""
+    if not sources:
+        return None
+    names = "|".join(re.escape(s) for s in sorted(sources, key=len, reverse=True))
+    return re.compile(rf"^.{{10,}}?\s[-|–—]\s(?:{names})(?![\w-])", re.IGNORECASE)
+
+
+def join_broken_lines(text: str) -> str:
+    """Join lines that don't end a sentence to the next line (keeps real boundaries)."""
+    out = ""
+    for line in (part.strip() for part in text.split("\n")):
+        if not line:
+            continue
+        if not out:
+            out = line
+        else:
+            out += ("\n" if SENTENCE_END_RE.search(out) else " ") + line
+    return out
+
+
+def strip_shared(text: str, headline: re.Pattern[str] | None) -> tuple[str, bool]:
+    """`text` without link text, URLs and pasted headlines, and whether any were found."""
+    kept, shared = [], False
+    for line in text.split("\n"):
+        own = URL_RE.sub(" ", LINK_RE.sub(" ", line))
+        while headline and (m := headline.search(own.strip())):
+            own = own.strip()[m.end() :]
+        own = SPACES_RE.sub(" ", own).strip()
+        shared = shared or own != SPACES_RE.sub(" ", line).strip()
+        if own:
+            kept.append(own)
+    return "\n".join(kept), shared
+
+
+def prepare_post(text: str | None, scoring: ScoringConfig) -> PreparedPost:
+    """Split a stored post into linking text, scoring text and kind (see PreparedPost)."""
+    raw = text or ""
+    link_text = join_broken_lines(LINK_RE.sub(r"\1", raw))
+    own, shared = strip_shared(raw, headline_regex(scoring.headline_sources))
+    score_text = join_broken_lines(own)
+    if len(score_text.split()) >= scoring.min_words:
+        kind = "opinion"
+    else:
+        kind = "share" if shared else "short"
+    return PreparedPost(link_text, score_text, kind)
 
 
 def post_date(created_at: Any) -> dt.date:
@@ -115,15 +199,24 @@ def _conditional_match(matcher: StockMatcher, text: str | None, created: dt.date
     return any(name.kind == "conditional" for name, *_ in matcher.matches(text or "", created))
 
 
-def link(stocks: list[Stock], config: ValuePickrConfig, full: bool = False) -> int:
-    """Link posts needing it and store their mentions. Returns posts processed."""
+def link(
+    stocks: list[Stock],
+    config: ValuePickrConfig,
+    full: bool = False,
+    scoring: ScoringConfig | None = None,
+) -> int:
+    """Link posts needing it and store their mentions (with the post's kind). Returns
+    posts processed."""
+    scoring = scoring or load_social_scoring()
     posts = posts_to_link(full=full)
     matchers = [StockMatcher(s) for s in stocks]
     rows = []
     for p in posts.itertuples(index=False):
         date = post_date(p.created_at)
-        for mention in link_post(p.platform, p.topic_id, p.text, date, config, matchers):
-            rows.append({"post_id": p.id, **mention})
+        prepared = prepare_post(p.text, scoring)
+        for mention in link_post(p.platform, p.topic_id, prepared.link_text, date, config,
+                                 matchers):  # fmt: skip
+            rows.append({"post_id": p.id, **mention, "post_kind": prepared.kind})
     replace_social_mentions(posts["id"].tolist(), rows)
     linked = sum(1 for r in rows if r["confidence"] >= LINK_THRESHOLD)
     logger.info("Linked %d post(s): %d mention(s), %d at confidence >= %.2f",
@@ -151,8 +244,15 @@ def build_post_input(
     return " ".join(sentences)
 
 
-def score_pending(news_config: NewsConfig, stocks: list[Stock], scorer: Scorer) -> int:
-    """Score every linked, not-yet-scored (post, stock) pair. Returns rows written."""
+def score_pending(
+    news_config: NewsConfig,
+    stocks: list[Stock],
+    scorer: Scorer,
+    scoring: ScoringConfig | None = None,
+) -> int:
+    """Score every linked, not-yet-scored opinion (post, stock) pair on the post's own
+    words (no links or pasted headlines). Returns rows written."""
+    scoring = scoring or load_social_scoring()
     pending = social_mentions_to_score(scorer.model_name, LINK_THRESHOLD)
     matchers = {s.symbol: StockMatcher(s) for s in stocks}
     pending = pending[pending["symbol"].isin(matchers)]
@@ -160,7 +260,7 @@ def score_pending(news_config: NewsConfig, stocks: list[Stock], scorer: Scorer) 
         (
             r,
             build_post_input(
-                r.text,
+                prepare_post(r.text, scoring).score_text,
                 matchers[r.symbol],
                 post_date(r.created_at),
                 r.method,

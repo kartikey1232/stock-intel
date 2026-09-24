@@ -260,7 +260,9 @@ class SocialPost(Base):
 
 class SocialMention(Base):
     """A watchlist stock a post is about. `method`: thread (the post is in the stock's
-    dedicated topic) or linker (processing/entities.py matched it in the text)."""
+    dedicated topic) or linker (processing/entities.py matched it in the text).
+    `post_kind`: opinion (scored), share (only a link or pasted headline) or short (under
+    scoring.min_words); shares and short replies count as activity but aren't scored."""
 
     __tablename__ = "social_mentions"
 
@@ -269,6 +271,7 @@ class SocialMention(Base):
     method: Mapped[str] = mapped_column(String(16), nullable=False)
     matched_alias: Mapped[str | None] = mapped_column(String(255))
     confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    post_kind: Mapped[str] = mapped_column(String(16), nullable=False, server_default="opinion")
 
 
 class SocialSentiment(Base):

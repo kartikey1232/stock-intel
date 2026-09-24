@@ -16,7 +16,7 @@ Last updated: 2026-09-24 (after the first ValuePickr run; own-thread boost commi
 | 5 | Signals & backtesting | Not started |
 | 6 | Scheduling, digests, Telegram alerts | Scheduling + macOS failure notifications done; digests and Telegram not started |
 
-- Tests: 372 passing (`uv run pytest`), ruff clean.
+- Tests: 380 passing (`uv run pytest`), ruff clean.
 - Watchlist (`config/watchlist.yaml`): RELIANCE, TCS, HDFCBANK, INFY, TMPV.
 - Git: `main`, no remote pushes made from these sessions. `PROGRESS.md` is tracked.
 
@@ -51,7 +51,8 @@ not in git.
 | `4a49eb5` | `config/acknowledged_flags.yaml`: reviewed flags log at INFO and show as reviewed; PROGRESS.md tracked |
 | `4f522d2` | Phase 4: ValuePickr collector, social linking/sentiment/`social_daily`, dashboard Social tab, `--skip-social`, principles 8–9 |
 | `9d826a4` | ValuePickr topics confirmed; "Market news and updates" (133414) dropped |
-| (next) | Own-thread conditional boost (0.6); discovery and skipped-post logging |
+| `518de02` | Own-thread conditional boost (0.6); discovery and skipped-post logging |
+| (next) | Social scoring: link text/URLs/pasted headlines excluded, shares and short replies unscored, broken lines rejoined |
 
 ## Decisions and findings worth remembering
 
@@ -154,9 +155,16 @@ not in git.
 - Processing: 712 posts, 706 linked (all scored), 326 social_daily rows from 2018-09-14
   to 2026-09-04. Only 8 posts in 1233 are post-demerger: 2 link via JLR/TMPV names, 6
   don't (CV talk or no company named); the new boost didn't change any of them.
-- FinBERT on forum text: about 70% of posts score neutral; short replies ("Totally
-  agreed.") and pasted headlines get scored as they are. Linked news headlines inside posts
-  stay in the text (link text isn't stripped).
+- FinBERT on forum text: about 70% of posts score neutral. Tuning (2026-09-24): link
+  text, URLs and pasted headlines are no longer scored; posts under 6 words of their own
+  are shares (6) or short replies (16) and count as activity only; broken lines are
+  rejoined. After rescoring, 684 of 706 linked mentions are scored; mean scores barely
+  moved (HDFCBANK 0.004, INFY 0.002, RELIANCE 0.114, TMPV 0.017).
+- Link-text markers apply to posts fetched or re-checked after this change; the 712
+  existing posts get them over ~8 runs of the rolling re-check (100 posts per run), and
+  each such refresh counts as an "edit" and re-links the post.
+- Social data is recent context only (uneven backfill per stock, deletions removed):
+  never backtest history or cross-stock comparison (CLAUDE.md).
 
 ## Open items / next steps
 
