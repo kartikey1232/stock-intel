@@ -6,8 +6,8 @@ chat to post to; find it with --find-chat after sending the bot a message).
 After each daily run (run_update.py), `deliver`:
 1. sends every unsent high-severity alert on its own, marking each sent_at as soon as it's
    delivered (so a retry never repeats one);
-2. sends a short failure notice if the alert step itself failed (then no pipeline alert
-   exists to carry the failures);
+2. sends a short failure notice if a step after alert building failed (the alert step
+   itself, or the backup), since the day's pipeline alert can't include those;
 3. sends the day's digest once, then marks that day's remaining alerts as sent.
 
 The token is part of every API URL, so it never goes into logs or error messages: errors
@@ -54,6 +54,9 @@ TIMEOUT_S = 15
 MIN_INTERVAL_S = 1.1
 MAX_RETRY_AFTER_S = 60
 MAX_MESSAGE_CHARS = 4000  # Telegram's limit is 4096
+# Steps that run after the day's alerts are built, so their failures aren't in the
+# pipeline alert: a direct failure notice carries them instead.
+LATE_STEPS = {"alerts", "backup"}
 
 
 class TelegramError(RuntimeError):
@@ -221,7 +224,7 @@ def deliver(
         bot.send(chat_id, alert_message(row))
         mark_alerts_sent([(row.symbol, row.alert_type, row.subject)], now())
         result.alerts_sent += 1
-    if "alerts" in failed:
+    if LATE_STEPS & set(failed):
         steps = ", ".join(failed)
         bot.send(chat_id, f"[!] stock-intel {day:%d %b %Y}: the update had failures: {steps}.")
         result.failure_notice = True

@@ -182,6 +182,14 @@ def test_high_alerts_go_alone_digest_once_and_nothing_is_sent_twice(engine: Engi
     assert len(fake.sent) == 1 and fake.sent[0]["text"].startswith("stock-intel digest")
 
 
+def test_failure_notice_for_a_failed_backup(engine: Engine) -> None:
+    fake = FakeTelegram()
+    assert tg.deliver(bot(fake), CHAT, DAY, [INFY], ["backup"]).failure_notice
+    assert "the update had failures: backup." in fake.sent[0]["text"]
+    fake.sent.clear()
+    assert not tg.deliver(bot(fake), CHAT, DAY, [INFY], ["news: sentiment"]).failure_notice
+
+
 def test_failure_notice_when_alerts_were_not_built(engine: Engine) -> None:
     fake = FakeTelegram()
     result = tg.deliver(bot(fake), CHAT, DAY, [INFY], ["news: sentiment", "alerts"])

@@ -57,6 +57,7 @@ def fake_steps(
     monkeypatch.setattr(run_update, "record_pipeline_run", lambda row: None)
     monkeypatch.setattr(run_update, "run_alerts", lambda stocks: None)
     monkeypatch.setattr(run_update, "run_delivery", lambda stocks, failed: False)
+    monkeypatch.setattr(run_update, "run_backup", lambda: None)
 
 
 def test_runs_prices_then_indicators_then_news_then_filings_then_social(calls) -> None:
@@ -244,6 +245,7 @@ def test_cli_parses_skip_news(monkeypatch) -> None:
         "skip_news": True,
         "skip_filings": False,
         "skip_social": False,
+        "skip_backup": False,
         "failures_file": None,
     }
     assert run_update.main(["--skip-filings"]) == 0
@@ -299,3 +301,26 @@ def test_telegram_delivery_marks_the_failures_file_and_its_failure_is_reported(
     monkeypatch.setattr(run_update, "run_delivery", broken)
     assert run_update.run(failures_file=failures_file) == 1
     assert failures_file.read_text().splitlines() == ["news: sentiment", "telegram delivery"]
+
+
+def test_backup_failure_counts_and_reaches_telegram(monkeypatch, calls, tmp_path) -> None:
+    seen = {}
+
+    def broken_backup():
+        raise OSError("disk full")
+
+    monkeypatch.setattr(run_update, "run_backup", broken_backup)
+    monkeypatch.setattr(
+        run_update, "run_delivery", lambda stocks, failed: seen.update(failed=list(failed)) or True
+    )
+    failures_file = tmp_path / "failures.txt"
+    assert run_update.run(failures_file=failures_file) == 1
+    assert seen["failed"] == ["backup"]  # delivery is told, so Telegram reports it
+    assert failures_file.read_text().splitlines() == ["backup", "# telegram: delivered"]
+
+
+def test_skip_backup(monkeypatch, calls) -> None:
+    ran = []
+    monkeypatch.setattr(run_update, "run_backup", lambda: ran.append("backup"))
+    assert run_update.run(skip_backup=True) == 0 and ran == []
+    assert run_update.run() == 0 and ran == ["backup"]

@@ -15,10 +15,11 @@ Steps:
   5. social       ValuePickr posts -> stock links -> sentiment -> daily aggregates
                   (skip with --skip-social)
 Then the run and its failed steps are recorded in pipeline_runs, the day's alerts are
-built (processing.alerts), and high-severity alerts plus the digest are sent to Telegram
-(delivery.telegram). A failure in either is reported too. When Telegram delivered,
-the failures file ends with TELEGRAM_DELIVERED so the scheduled wrapper skips its macOS
-notification; otherwise that notification is the fallback.
+built (processing.alerts), the database and data/filings/ are backed up to BACKUP_DIR
+(storage.backup; skip with --skip-backup), and high-severity alerts plus the digest are
+sent to Telegram (delivery.telegram). A failure in any of these is reported too. When
+Telegram delivered, the failures file ends with TELEGRAM_DELIVERED so the scheduled
+wrapper skips its macOS notification; otherwise that notification is the fallback.
 
 Corporate actions are synced from config/corporate_actions.yaml before indicators are
 computed; symbols whose actions changed get a full indicator recompute.
@@ -31,7 +32,8 @@ never blocks the rest. Exit code is 0 on full success, 1 if anything failed.
 scheduled wrapper's notification.
 
 Run with:  uv run python run_update.py [--full-indicators] [--skip-news] [--skip-filings]
-                                       [--skip-social] [--failures-file PATH]
+                                       [--skip-social] [--skip-backup]
+                                       [--failures-file PATH]
 """
 
 import argparse
@@ -200,6 +202,13 @@ def run_alerts(stocks: list[Stock]) -> None:
 TELEGRAM_DELIVERED = "# telegram: delivered"
 
 
+def run_backup() -> None:
+    """Back up the database and data/filings/ into BACKUP_DIR (lazy import)."""
+    from storage import backup
+
+    backup.run_backup()
+
+
 def run_delivery(stocks: list[Stock], failed: list[str]) -> bool:
     """Send alerts and the digest to Telegram (lazy import). True if Telegram delivered;
     False if it isn't configured. Raises if sending failed."""
@@ -240,6 +249,7 @@ def run(
     skip_news: bool = False,
     skip_filings: bool = False,
     skip_social: bool = False,
+    skip_backup: bool = False,
     failures_file: Path | None = None,
 ) -> int:
     """Run the full update pipeline and return a process exit code."""
@@ -298,6 +308,13 @@ def run(
         logger.exception("Building alerts failed")
         failed.append("alerts")
         record_run(started_at, failed)
+    if not skip_backup:
+        try:
+            run_backup()
+        except Exception:
+            logger.exception("Backup failed")
+            failed.append("backup")
+            record_run(started_at, failed)
     delivered = False
     try:
         delivered = run_delivery(stocks, failed)
@@ -327,6 +344,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--skip-news", action="store_true", help="skip the news pipeline")
     parser.add_argument("--skip-filings", action="store_true", help="skip the filings pipeline")
     parser.add_argument("--skip-social", action="store_true", help="skip the social pipeline")
+    parser.add_argument("--skip-backup", action="store_true", help="skip the data backup")
     parser.add_argument(
         "--failures-file",
         type=Path,
@@ -339,6 +357,7 @@ def main(argv: list[str] | None = None) -> int:
         skip_news=args.skip_news,
         skip_filings=args.skip_filings,
         skip_social=args.skip_social,
+        skip_backup=args.skip_backup,
         failures_file=args.failures_file,
     )
 

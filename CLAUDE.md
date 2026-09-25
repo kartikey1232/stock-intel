@@ -37,6 +37,7 @@ uv run python -m collectors.prices --universe nifty50_ex_watchlist  # research u
 uv run python -m processing.hypotheses          # registered out-of-sample test (docs/hypotheses.md)
 uv run python -m processing.alerts [--date D] [--days N] [--digest]  # build alerts; print digest
 uv run python -m delivery.telegram --find-chat | --test | --digest   # Telegram: chat id, test, send
+uv run python -m storage.backup [--list | --restore ARCHIVE|latest --to DIR]  # backup / verified restore
 uv run python -m collectors.news                # news articles (Google News + publisher RSS)
 uv run python -m collectors.article_text [--reclean]  # full text for pending articles
 uv run python -m processing.stories [--full]    # group syndicated copies into stories
@@ -339,6 +340,15 @@ uv run streamlit run dashboard.py               # launch the dashboard
   once; the day's other alerts are then marked sent. When Telegram delivered, the failures
   file ends with "# telegram: delivered" and `scheduled_update.sh` skips the macOS
   notification; if Telegram isn't configured or fails, the notification is the fallback.
+- Backups (`storage/backup.py`): run_update backs up after building alerts and before
+  Telegram, so a failure ("backup") reaches the exit code, pipeline_runs and a Telegram
+  failure notice. The database is copied with SQLite's backup API (never a file copy),
+  integrity-checked, then archived with data/filings/ and a manifest (SHA-256) as
+  `<name>.partial` and renamed when complete; 14 days kept, the newest always. BACKUP_DIR
+  is an iCloud Drive folder: launchd jobs can write there without Full Disk Access
+  (tested 2026-09-25), but this agent's own shell can't read it ("Operation not
+  permitted"), so test real backups/restores through a one-off launchd job. Never grant
+  Full Disk Access to bash, uv or python. Restore never touches the live project.
 - Benchmarks (`benchmarks:` in `config/watchlist.yaml`, e.g. NIFTY50 = ^NSEI) get prices,
   the missing-bar check and indicators like stocks, but `load_watchlist()` never returns
   them: no news, social, filings, signals or dashboard entry.

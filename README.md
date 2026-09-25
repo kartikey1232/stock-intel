@@ -290,6 +290,39 @@ posts, never the post text.
 **Reddit** is out of scope: Reddit denied the Data API application (24 Sep 2026), so
 there is no Reddit collector, and no scraping, Pushshift or third-party Reddit data.
 
+## Backups
+
+After each scheduled update, `storage/backup.py` writes one compressed backup of the data
+that can't be re-downloaded to `BACKUP_DIR` (set in `.env`, outside the project; here an
+iCloud Drive folder): a consistent copy of `data/stock_intel.db` made with SQLite's
+backup API (safe while the database is in use, integrity-checked), `data/filings/`, and
+a manifest with the database's checksum. About 8.4 MB each (2026-09-25); 14 days are
+kept (~120 MB), older ones are deleted. A failed backup fails the run and is reported on
+Telegram.
+
+```bash
+uv run python -m storage.backup                  # make a backup now
+uv run python -m storage.backup --list           # list backups
+uv run python -m storage.backup --restore latest --to ~/stock-intel-restore
+```
+
+**Restoring** (the tool never overwrites the live project; replacing files is manual):
+
+1. Stop the schedule: `scripts/install_schedule.sh --remove`.
+2. Restore into an empty folder: `uv run python -m storage.backup --restore latest --to
+   ~/stock-intel-restore` (or name an archive file). It checks the database's SHA-256
+   against the manifest, runs an integrity check and counts the filings files.
+3. Keep the current data aside: `mv data/stock_intel.db data/stock_intel.db.before-restore`
+   (and any `data/stock_intel.db-wal`/`-shm`), and `mv data/filings data/filings.before-restore`.
+4. Copy the restored files in: `cp ~/stock-intel-restore/stock_intel.db data/` and
+   `cp -R ~/stock-intel-restore/filings data/filings`.
+5. Check, then re-enable the schedule: `uv run python -m processing.results --report`,
+   `uv run python run_update.py`, then `scripts/install_schedule.sh`.
+
+Anything collected after the backup is lost, except what can be fetched again: prices
+refill on the next update, but news older than Google News' 7-day window and ValuePickr
+posts beyond the backfill limit can't be.
+
 ## Data use
 
 **This repository contains code only.** No collected data is published here: no prices
@@ -349,6 +382,7 @@ New stocks get their full 5-year history on the next update.
 | Variable | Used for | Default |
 |---|---|---|
 | `DB_PATH` | SQLite database file (relative to project root) | `data/stock_intel.db` |
+| `BACKUP_DIR` | Absolute folder for daily backups, outside the project | — (backup fails if unset) |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | Telegram alerts and digest (Phase 6) | — (not sent if unset) |
 | `SOCIAL_HASH_KEY` | Keyed hash of social post authors (Phase 4) | — (required for ValuePickr) |
 | `ANTHROPIC_API_KEY` | News sentiment (Phase 2) | — |
@@ -402,7 +436,8 @@ New stocks get their full 5-year history on the next update.
 │   └── telegram.py        # Telegram Bot API over httpx; token never logged
 ├── storage/
 │   ├── db.py              # SQLAlchemy schema, upserts, reads
-│   └── social.py          # Reads and writes for the social tables
+│   ├── social.py          # Reads and writes for the social tables
+│   └── backup.py          # Daily backup of the database + filings; verified restore
 ├── utils/
 │   ├── http.py            # Per-domain rate limiter + retried GET
 │   ├── logging_setup.py   # Console + rotating file logging

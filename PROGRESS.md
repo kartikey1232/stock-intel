@@ -16,7 +16,7 @@ Last updated: 2026-09-24 (after the first ValuePickr run; own-thread boost commi
 | 5 | Signals & backtesting | 9 rule-based price signals (no look-ahead test), Nifty 50 benchmark, event study built; no signal tuned |
 | 6 | Scheduling, digests, Telegram alerts | Scheduling, alert engine, template digest and Telegram delivery done (live 2026-09-24); macOS notification is the fallback |
 
-- Tests: 479 passing (`uv run pytest`), ruff clean.
+- Tests: 494 passing (`uv run pytest`), ruff clean.
 - Watchlist (`config/watchlist.yaml`): RELIANCE, TCS, HDFCBANK, INFY, TMPV.
 - Git: `main`, pushed to the public repo https://github.com/kartikey1232/stock-intel
   (created 2026-09-24 after a history scan for secrets and personal data).
@@ -262,6 +262,16 @@ not in git.
   TCS, TMPV) are marked market-wide: after the 14 Sep holiday Nifty opened +0.8% and
   closed -1.2%, and the three stocks gave back much of their gaps. Gap-up notes now quote
   the 1-day in-sample result (worse than baseline, n=43), matching H2's horizon.
+
+### Backups (2026-09-25)
+- BACKUP_DIR = iCloud Drive `Backups/stock-intel` (user's choice). A one-off launchd job
+  (same bash -> uv -> python chain as the schedule) wrote, read and deleted a file there
+  without Full Disk Access; the interactive agent shell is blocked from that folder.
+- First real backup via launchd: stock-intel-20260925-130821.tar.gz, 8.4 MB (4.4 MB of it
+  the database, the rest 83 filings files); 14 days ~ 118 MB. Restored via launchd into a
+  temporary folder: SHA-256 and integrity check OK; every table's row count and all
+  filings identical to the live data.
+- Copies are in iCloud, i.e. off the Mac, but on one Apple account.
 
 ## Open items / next steps
 
