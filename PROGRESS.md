@@ -12,7 +12,7 @@ Last updated: 2026-09-24 (after the first ValuePickr run; own-thread boost commi
 | 1 | Prices + technical indicators | Done |
 | 2 | News + sentiment | Done |
 | 3 | NSE/BSE filings (quarterly results) | Done: all 80 XBRL files (8 quarters × standalone/consolidated × 5 stocks) imported by hand; flags reviewed |
-| 4 | Social media signals | ValuePickr collecting (4 dedicated topics, first run 2026-09-24); Reddit: nothing built until an API application is approved |
+| 4 | Social media signals | Done: ValuePickr collecting (4 dedicated topics, first run 2026-09-24). Reddit out of scope (application denied 2026-09-24) |
 | 5 | Signals & backtesting | 9 rule-based price signals (no look-ahead test), Nifty 50 benchmark, event study built; no signal tuned |
 | 6 | Scheduling, digests, Telegram alerts | Scheduling, alert engine, template digest and Telegram delivery done (live 2026-09-24); macOS notification is the fallback |
 
@@ -131,7 +131,7 @@ not in git.
     read verbatim. New API access needs manual approval under the Responsible Builder
     Policy (Nov 2025); that page and the Data API Wiki return 403 to non-browser clients
     and were only seen via search excerpts, so read them in a browser before applying.
-    PRAW 8.0.3 (Aug 2026) is current. Only the user can apply.
+    PRAW 8.0.3 (Aug 2026) is current. (The application was later denied; see below.)
   - ValuePickr: ToS (2018) silent on bots; posts CC BY-NC-SA 3.0; robots.txt disallows
     /search and RSS only; Discourse default limit 50 req/10 s per IP.
   - X: pay-per-use only (~$0.005/read), skip. StockTwits: API closed. YouTube: 10k
@@ -139,13 +139,12 @@ not in git.
 - Decisions (approved by the user): dedicated topics link at 0.9 without the linker;
   TMPV topic 1233 defaults only before 2025-10-14; ValuePickr text kept; ValuePickr
   authors stored only as a keyed HMAC; dashboard shows no post text.
-- **Reddit decision (user, 2026-09-24; CLAUDE.md principle 9).** Build nothing until Reddit
-  approves an API application. Official API only: no scraping, Pushshift or third-party
-  datasets. When built: post text deleted as soon as it's scored (max 48 h); only post ID,
-  timestamp, stock link and score kept, for deletion tracing; no author information at
-  all (not even a hash); a deletion sync removes scores of deleted posts and recomputes
-  aggregates; never used in fitted models or research (research needs Reddit's RFR
-  programme). This replaces the earlier plan to keep Reddit text for 30 days.
+- **Reddit is permanently out of scope (CLAUDE.md principle 9).** Reddit denied the Data
+  API application on 2026-09-24 (request 18508777) as not compliant with the Responsible
+  Builder Policy and/or lacking details. No Reddit collector will be built, the same use
+  case won't be re-submitted (the policy prohibits multiple requests), and no scraping,
+  Pushshift or third-party Reddit datasets. This replaces the earlier plan to build a
+  Reddit collector after approval.
 - Topic IDs came from search results and were confirmed by the user in a browser on
   2026-09-24: HDFCBANK 24141, RELIANCE 32873, INFY 8124, TMPV 1233 (all active).
   "Market news and updates" (133414) was dropped: no posts since February 2024. General
@@ -278,8 +277,7 @@ not in git.
 5. Optional: show provisions (and NII/NPA for banks) on the dashboard; they're already
    extracted.
 6. Phase 4: check the next ValuePickr run's log for the skipped-post reasons and the
-   /latest.json line. Reddit: only the user can apply for API access; nothing is built
-   until it's approved (CLAUDE.md principle 9). Phase 5 backtests must filter news and social posts on
+   /latest.json line. Phase 5 backtests must filter news and social posts on
    `first_seen_at` and results on `filed_at`, and treat social data as
    survivorship-biased (deleted posts are purged).
 

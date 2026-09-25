@@ -6,8 +6,9 @@ from Yahoo Finance, computes technical indicators, and shows them in a Streamlit
 **Current status:** Phases 1 (prices + indicators) and 2 (news + sentiment) are complete.
 Phase 3 (filings and results) works from a manual results inbox plus HDFC Bank's IR site;
 automated exchange access is on hold pending the exchanges' consent. Phase 4 (social
-signals) has a ValuePickr collector; Reddit waits on Reddit's API approval. Backtesting
-and Telegram alerts are planned. See [Roadmap](#roadmap).
+signals) uses ValuePickr. Phase 5 has rule-based price signals, an event study and a
+registered out-of-sample test; Phase 6 has alerts and a digest delivered to Telegram.
+See [Roadmap](#roadmap).
 
 ## Setup
 
@@ -286,12 +287,8 @@ context for one stock, not as backtest history or a cross-stock comparison.
 The dashboard's **Social** tab shows post and author counts, sentiment and links to the
 posts, never the post text.
 
-**Reddit**: nothing is built, and nothing will be until Reddit approves an API
-application. Reddit data will come only from the official API, never from scraping,
-Pushshift or third-party datasets. A future collector will delete post text as soon as
-it's scored (within 48 hours), keep only post ID, timestamp, stock link and score, store
-no author information at all, remove the scores of deleted posts and recompute
-aggregates, and never feed fitted models or research (see CLAUDE.md principle 9).
+**Reddit** is out of scope: Reddit denied the Data API application (24 Sep 2026), so
+there is no Reddit collector, and no scraping, Pushshift or third-party Reddit data.
 
 ## Data use
 
@@ -354,7 +351,6 @@ New stocks get their full 5-year history on the next update.
 | `DB_PATH` | SQLite database file (relative to project root) | `data/stock_intel.db` |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | Telegram alerts and digest (Phase 6) | — (not sent if unset) |
 | `SOCIAL_HASH_KEY` | Keyed hash of social post authors (Phase 4) | — (required for ValuePickr) |
-| `REDDIT_CLIENT_ID`, `REDDIT_CLIENT_SECRET` | Reddit (Phase 4, awaiting approval) | — |
 | `ANTHROPIC_API_KEY` | News sentiment (Phase 2) | — |
 
 ## Project structure
@@ -572,7 +568,7 @@ The token is never written to logs or error messages.
 1. ✅ Prices + technical indicators
 2. ✅ News + sentiment
 3. NSE/BSE filings (quarterly results)
-4. Social media signals (ValuePickr done; Reddit awaiting API approval)
+4. ✅ Social media signals (ValuePickr)
 5. Signals & backtesting (price signals and an event study done)
 6. Scheduling, daily digests, Telegram alerts (scheduling, alert engine and digest done;
    delivery next)

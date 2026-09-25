@@ -260,7 +260,7 @@ class NewsDaily(Base):
 
 
 class SocialTopic(Base):
-    """A forum topic (or, later, a subreddit) we've fetched posts from.
+    """A forum topic we've fetched posts from.
 
     `role`: dedicated (configured with a stock), general (configured, no stock) or
     discovered (found in /latest.json because its title names a watchlist stock).
