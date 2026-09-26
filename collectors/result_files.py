@@ -8,8 +8,9 @@ results table is then rebuilt. Anything else is moved to inbox/rejected/ with a
 Nothing is ever deleted.
 
 `checklist` shows, per stock, which of the last 8 quarters x {standalone, consolidated}
-are imported (XBRL), available only as a lower-trust PDF, or missing, with the exact NSE
-page to download each missing one from.
+are done (imported as XBRL, or covered by an SEC 6-K exhibit from collectors/sec_results),
+available only as a lower-trust PDF, or missing, with the exact NSE page to download each
+missing one from.
 
 Run with:
   uv run python -m collectors.result_files import
@@ -223,8 +224,17 @@ def download_page(symbol: str, period_end: dt.date) -> str:
     return f"https://www.nseindia.com/companies-listing/corporate-filings-financial-results?symbol={symbol}"
 
 
+STATUSES = {
+    "xbrl": "ok (XBRL)",
+    "sec": "ok (SEC 6-K)",
+    "pdf": "PDF only - XBRL would upgrade",
+}
+DONE = {"ok (XBRL)", "ok (SEC 6-K)"}
+
+
 def checklist(stocks: list[Stock], today: dt.date) -> pd.DataFrame:
-    """Per stock x quarter x basis: xbrl | pdf (lower trust) | missing, and where to get it."""
+    """Per stock x quarter x basis: done (XBRL or SEC 6-K) | PDF only | missing, and where to
+    get it."""
     results = read_results()
     have = {
         (r.symbol, pd.Timestamp(r.period_end).date(), r.basis): r.source
@@ -235,9 +245,7 @@ def checklist(stocks: list[Stock], today: dt.date) -> pd.DataFrame:
         for end in last_quarters(today):
             for basis in BASES:
                 source = have.get((stock.symbol, end, basis))
-                status = {"xbrl": "ok (XBRL)", "pdf": "PDF only - XBRL would upgrade"}.get(
-                    source, "MISSING"
-                )
+                status = STATUSES.get(source, "MISSING")
                 rows.append(
                     {
                         "symbol": stock.symbol,
@@ -245,9 +253,7 @@ def checklist(stocks: list[Stock], today: dt.date) -> pd.DataFrame:
                         "period_end": end,
                         "basis": basis,
                         "status": status,
-                        "download_from": ""
-                        if source == "xbrl"
-                        else download_page(stock.symbol, end),
+                        "download_from": "" if status in DONE else download_page(stock.symbol, end),
                     }
                 )
     return pd.DataFrame(rows)
@@ -256,10 +262,10 @@ def checklist(stocks: list[Stock], today: dt.date) -> pd.DataFrame:
 def print_checklist(table: pd.DataFrame) -> None:
     """Print the checklist grouped by stock, with per-stock totals."""
     for symbol, g in table.groupby("symbol", sort=False):
-        done = (g["status"] == "ok (XBRL)").sum()
-        print(f"\n{symbol}: {done}/{len(g)} imported as XBRL")
+        done = g["status"].isin(DONE).sum()
+        print(f"\n{symbol}: {done}/{len(g)} done (XBRL or SEC 6-K)")
         for r in g.itertuples(index=False):
-            mark = "✓" if r.status == "ok (XBRL)" else ("~" if r.status.startswith("PDF") else "✗")
+            mark = "✓" if r.status in DONE else ("~" if r.status.startswith("PDF") else "✗")
             line = f"  {mark} {r.quarter} {r.period_end} {r.basis:<12} {r.status}"
             print(line + (f"\n      -> {r.download_from}" if r.download_from else ""))
     print(

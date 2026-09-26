@@ -48,6 +48,7 @@ uv run python -m processing.filing_categories   # categorise filings, detect cor
 uv run python -m collectors.result_files import     # import results files from data/filings/inbox/
 uv run python -m collectors.result_files checklist  # which quarters x bases are missing, and where from
 uv run python -m collectors.results_ir          # HDFC Bank results PDFs from its IR site
+uv run python -m collectors.sec_results [--recheck]  # INFY/HDFCBANK results from SEC 6-Ks (needs SEC_CONTACT_EMAIL)
 uv run python -m processing.results --report    # rebuild results table; last 8 quarters
 uv run python -m collectors.valuepickr          # ValuePickr posts (needs confirmed: true + SOCIAL_HASH_KEY)
 uv run python -m collectors.valuepickr --reclean  # re-apply text cleaning rules to stored raw_html (local)
@@ -145,8 +146,9 @@ uv run streamlit run dashboard.py               # launch the dashboard
   Reliance" scores positive for RELIANCE.
 - `run_update.py` runs prices, then indicators, then the news steps (collect -> text ->
   stories -> entities -> sentiment -> news_daily), then the filings steps (HDFC Bank IR
-  PDFs -> results inbox import -> filing classification -> results rebuild). Every step is
-  isolated through `run_steps`: a failure is logged and recorded, later steps still run,
+  PDFs -> results inbox import -> SEC 6-Ks -> filing classification -> results rebuild;
+  the SEC step imports its module inside the step, so a broken import fails only it). Every
+  step is isolated through `run_steps`: a failure is logged and recorded, later steps still run,
   and the exit code is 1. Raise `StepError` for "finished, but partly failed". News and
   filings modules are imported lazily inside `news_steps()`/`filings_steps()`, so a broken
   dependency (e.g. torch, pdfplumber) can't stop price updates. Keep it that way: don't
@@ -196,11 +198,49 @@ uv run streamlit run dashboard.py               # launch the dashboard
   usually adjusts splits and bonuses, "yahoo_adjusted" (no ex-date gap in raw prices) means
   don't add it; "needs_review" means the gap is real and it probably belongs in the YAML.
 - Results come from files, never from scraping exchanges: XBRL the user downloads into
-  `data/filings/inbox/` (identified by content, any filename), plus HDFC Bank results PDFs
-  from its IR site (the only IR site whose results are statically linked and robots-allowed;
+  `data/filings/inbox/` (identified by content, any filename), SEC 6-K exhibits for
+  INFY/HDFCBANK (see below), plus HDFC Bank results PDFs from its IR site (the only IR site whose results are statically linked and robots-allowed;
   Infosys/TCS block bots, TMPV lists results via a private JS API). XBRL always beats PDF
   for the same (symbol, quarter, basis); PDF rows are trust=low. The `results` table is
   rebuilt from stored files on every run.
+- SEC 6-Ks (`collectors/sec_results.py`): INFY and HDFCBANK furnish their Indian results
+  (Ind AS / Indian GAAP) to the SEC. Source ranking is XBRL > SEC 6-K > IR PDF
+  (`SOURCE_RANK`); sec rows are trust=high. Exhibits are selected by content, never by
+  exhibit number (FY27Q1: HDFC Bank EX-99, Infosys EX-99.3; in 2021 HDFC Bank's results
+  were in the 6-K body), so every HTML document in a 6-K is parsed. A document with a
+  results table that fails the checks, with nothing else in the 6-K passing, fails the
+  6-K loudly. Infosys's EX-99.3 also carries an IFRS US$ summary and a partial standalone
+  table (revenue and profit only); `FOREIGN_RE` skips the former. In Q4 FY23 that
+  standalone table has no heading at all, so it isn't read (no guessing). Q2 headings say
+  "quarter and half-year ended". HDFC Bank printed ₹ lac/lakh until at least FY24Q1 and
+  ₹ crore to 2 decimals by FY27Q1; Infosys prints whole crore.
+- Loud vs silent: `has_results_table` (a period "ended" plus a table with two or more
+  headline metrics) decides whether an unparseable document fails the 6-K or counts as
+  "no results". It must not depend on the heading regex, or a heading the parser misses
+  turns into a silent "none" (that happened with "half-year"). After a parser fix, run
+  `collectors.sec_results --recheck` so 6-Ks recorded as "none" are examined again.
+- Infosys files each quarter's results in two 6-Ks (the release, then a later one with
+  full statements, exhibit 99.6-ish). A quarter's window is skipped only once both bases
+  are stored (`sec_filings_checked.bases`), and an exhibit adding no new (quarter, basis)
+  is recorded as "duplicate" and not stored.
+- SEC validation: `sec_mismatches` compares every printed figure with XBRL for the same
+  quarter and basis; a match means the XBRL value rounded to the printed precision
+  (`ParsedResult.precision`) equals the printed value. Any other difference fails the 6-K
+  before anything is stored, and it isn't recorded in `sec_filings_checked`, so it fails
+  again every run until resolved. `rebuild` logs an ERROR when XBRL imported later
+  disagrees with a stored exhibit (XBRL still wins). Don't loosen the tolerance to make a
+  mismatch pass; find out which figure is wrong. Known case: HDFCBANK FY25Q4 consolidated
+  net profit. The 6-K prints 19,284.57 before minority interest, 449.69 minority, 18,834.88
+  after; the XBRL tags 18,834.88 as `ProfitLossForThePeriod` and 18,385.19 (minority
+  subtracted twice) as the after-minority tag that `net_profit` uses. So the XBRL is
+  internally inconsistent, and that 6-K fails every run until the user decides.
+- SEC access: EDGAR is not an exchange host, so principle 7 doesn't apply. SEC's fair
+  access policy requires a User-Agent with a contact (`SEC_CONTACT_EMAIL` in .env) and at
+  most 10 requests/s; we use 1/s per host (`MIN_INTERVAL_S`). Checked 6-Ks are never
+  refetched, and 6-Ks in the results window of a quarter already covered are skipped
+  unfetched. Stored exhibits keep EDGAR's `<DOCUMENT>` wrapper; `parse_file` dispatches
+  on it. When an exhibit states no board date, `filed_at` is the EDGAR filing date (not
+  "[date approx.]"), and `rebuild` keeps it.
 - XBRL: elements are matched by local name (prefixes differ between taxonomies). Values are
   absolute INR, divided by 1e7 for crore. Q4 filings also contain full-year contexts, so
   the parser only accepts ~3-month contexts. Pre-2025 NSE files (FY25Q2, FY25Q3) give the

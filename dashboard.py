@@ -210,6 +210,13 @@ def filing_badge(filing_type: str | None) -> str:
     return f":{FILING_BADGE_COLORS.get(kind, 'gray')}-badge[{kind.replace('_', ' ')}]"
 
 
+def source_label(raw: pd.DataFrame) -> str:
+    """Where a quarter's figures came from: the weakest source among its rows."""
+    if (raw["trust"] == "low").any():
+        return "PDF (lower trust)"
+    return "SEC 6-K" if (raw["source"] == "sec").any() else "XBRL"
+
+
 def flags_text(raw: pd.DataFrame) -> str:
     """One quarter's validation flags; reviewed ones show as "reviewed: <reason>"."""
     flagged = raw[raw["flag"].notna()]
@@ -243,7 +250,7 @@ def results_table(results: pd.DataFrame, basis: str, quarters: int = 8) -> pd.Da
             row[f"{name}_yoy"] = by["yoy"].get(metric)
             row[f"{name}_qoq"] = by["qoq"].get(metric)
         row["eps"] = by["value"].get("eps")
-        row["source"] = "PDF (lower trust)" if (raw["trust"] == "low").any() else "XBRL"
+        row["source"] = source_label(raw)
         row["flags"] = flags_text(raw)
         row["notes"] = joined_notes(q[q["metric"].isin([top, "net_profit"])])
         out.append(row)

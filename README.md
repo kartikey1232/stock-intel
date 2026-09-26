@@ -4,7 +4,8 @@ A personal stock intelligence tool for Indian markets (NSE/BSE). It collects dai
 from Yahoo Finance, computes technical indicators, and shows them in a Streamlit dashboard.
 
 **Current status:** Phases 1 (prices + indicators) and 2 (news + sentiment) are complete.
-Phase 3 (filings and results) works from a manual results inbox plus HDFC Bank's IR site;
+Phase 3 (filings and results) works from a manual results inbox, the Indian results INFY and
+HDFCBANK furnish to the SEC (6-K), and HDFC Bank's IR site;
 automated exchange access is on hold pending the exchanges' consent. Phase 4 (social
 signals) uses ValuePickr. Phase 5 has rule-based price signals, an event study and a
 registered out-of-sample test; Phase 6 has alerts and a digest delivered to Telegram.
@@ -34,7 +35,7 @@ One command updates everything for every stock in the watchlist, in five stages:
 3. the news pipeline (collect articles, extract text, group stories, link articles to
    stocks, score sentiment, build daily aggregates);
 4. the filings pipeline (HDFC Bank results PDFs from its IR site, import the results
-   inbox, classify filings, extract results);
+   inbox, INFY/HDFCBANK results from SEC 6-Ks, classify filings, extract results);
 5. the social pipeline (ValuePickr posts, link them to stocks, score sentiment, build
    daily aggregates).
 
@@ -177,7 +178,7 @@ Opens at <http://localhost:8501>. Pick a stock and date range in the sidebar. Th
   - **Filings:** date, category badge, subject and an attachment link or download, with a
     category filter.
   - **Results:** quarterly revenue (total income for banks) and net profit bars with YoY %
-    lines, plus a last-8-quarters table with YoY/QoQ, source (XBRL or lower-trust PDF) and
+    lines, plus a last-8-quarters table with YoY/QoQ, source (XBRL, SEC 6-K or lower-trust PDF) and
     validation flags; standalone or consolidated.
 
 Data is cached for 5 minutes. Use **Reload from database** in the sidebar after running an
@@ -231,8 +232,22 @@ Where the files come from:
 
   Files are identified by their content (company, quarter, standalone/consolidated).
   Anything that doesn't parse goes to `inbox/rejected/` with a `.reason.txt`.
+- **SEC 6-K exhibits** for INFY and HDFCBANK (both NYSE-listed), fetched automatically from
+  EDGAR (trust = high, used only where no XBRL exists). Each 6-K's documents are chosen by
+  content (Ind AS / Indian GAAP, ₹ crore or lakh, a quarter's standalone/consolidated
+  table), not by exhibit number. Before storing, every figure is checked against the XBRL
+  we already have for that quarter: rounded to the precision the 6-K prints it at, it must
+  match exactly, or the step fails with the symbol, quarter, basis and metric. The
+  checklist counts SEC-covered quarters as done. Set `SEC_CONTACT_EMAIL` in `.env`: SEC
+  requires a contact in the User-Agent. Requests stay at one per second per host (SEC
+  allows 10).
+
+  ```bash
+  uv run python -m collectors.sec_results            # new 6-Ks
+  uv run python -m collectors.sec_results --recheck  # after a parser fix: re-examine "no results" 6-Ks
+  ```
 - **HDFC Bank results PDFs** from its investor-relations site, fetched automatically
-  (trust = low, used only where no XBRL exists):
+  (trust = low, used only where neither XBRL nor a 6-K exists):
 
   ```bash
   uv run python -m collectors.results_ir
@@ -417,6 +432,7 @@ New stocks get their full 5-year history on the next update.
 │   ├── news.py            # Raw articles from Google News + publisher RSS
 │   ├── result_files.py    # Results inbox importer + missing-files checklist
 │   ├── results_ir.py      # HDFC Bank results PDFs from its IR site
+│   ├── sec_results.py     # INFY/HDFCBANK Indian results from SEC 6-K exhibits
 │   ├── valuepickr.py      # Raw ValuePickr posts (Discourse JSON) + deletion sync
 │   └── article_text.py    # Article full text (trafilatura), robots.txt-aware
 ├── processing/            # Turn raw data into insight (no network calls)
@@ -426,7 +442,7 @@ New stocks get their full 5-year history on the next update.
 │   ├── sentiment.py       # FinBERT scoring + daily per-stock aggregates
 │   ├── social.py          # Links social posts to stocks, scores them, social_daily
 │   ├── filing_categories.py  # Filing types + announced corporate actions
-│   ├── results.py         # XBRL/PDF results extraction, QoQ/YoY, validation
+│   ├── results.py         # XBRL/SEC/PDF results extraction, QoQ/YoY, validation
 │   ├── signals.py         # Rule-based price signals (no look-ahead)
 │   ├── backtest.py        # Event study of signals vs Nifty 50 and a do-nothing baseline
 │   ├── hypotheses.py      # Registered out-of-sample test (docs/hypotheses.md)
@@ -487,7 +503,9 @@ New stocks get their full 5-year history on the next update.
 - `pending_actions` (`id`): symbol, action_type, ratio, price_factor, record_date,
   ex_date, status, note, filed_at, subject. Rebuilt on every run.
 - `results` (`symbol, period_end, basis, metric`): fiscal_quarter, value, unit, source
-  (xbrl/pdf), trust, filing_id, extracted_at, flag. Rebuilt from stored files.
+  (xbrl/sec/pdf), trust, filing_id, extracted_at, flag. Rebuilt from stored files.
+- `sec_filings_checked` (`accession`): symbol, filed_on, period_end, outcome (results/none),
+  checked_at. 6-Ks the SEC collector has examined; failed ones aren't recorded.
 
 Architecture rules and coding conventions are in [`CLAUDE.md`](CLAUDE.md).
 

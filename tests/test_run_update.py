@@ -4,7 +4,13 @@ import run_update
 from collectors.prices import RunSummary
 
 NEWS = ["news collection", "article text", "story grouping", "entity linking", "sentiment"]
-FILINGS = ["IR results PDFs", "results inbox import", "filing classification", "results extraction"]
+FILINGS = [
+    "IR results PDFs",
+    "results inbox import",
+    "SEC 6-K results",
+    "filing classification",
+    "results extraction",
+]
 SOCIAL = ["ValuePickr collection", "social linking", "social sentiment", "daily social aggregates"]
 
 
@@ -104,7 +110,8 @@ def test_social_failure_is_isolated_and_named(monkeypatch, calls, tmp_path) -> N
 def test_filings_failure_is_isolated_and_sets_exit_code(monkeypatch, calls) -> None:
     fake_steps(monkeypatch, calls, failing_filings={"IR results PDFs": RuntimeError("down")})
     assert run_update.run() == 1
-    assert calls[-8:-4] == FILINGS  # later filings steps still ran
+    # later filings steps still ran
+    assert calls[-len(FILINGS) - len(SOCIAL) : -len(SOCIAL)] == FILINGS
 
 
 def test_indicators_and_news_still_run_after_price_failure(monkeypatch, calls) -> None:

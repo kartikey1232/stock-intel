@@ -418,6 +418,26 @@ class PendingAction(Base):
     detected_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, nullable=False)
 
 
+class SecFilingChecked(Base):
+    """A 6-K the SEC collector has examined (collectors/sec_results.py).
+
+    `outcome` is "results" (an Indian-results exhibit was stored; `period_end` is its
+    quarter, `bases` e.g. "consolidated+standalone"), "duplicate" (results already stored
+    from another 6-K) or "none" (no results exhibit). Failed checks are not recorded, so they're
+    retried, and fail again, on every run until resolved.
+    """
+
+    __tablename__ = "sec_filings_checked"
+
+    accession: Mapped[str] = mapped_column(String(32), primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    filed_on: Mapped[dt.date] = mapped_column(Date, nullable=False)
+    period_end: Mapped[dt.date | None] = mapped_column(Date)
+    bases: Mapped[str | None] = mapped_column(String(32))
+    outcome: Mapped[str] = mapped_column(String(16), nullable=False)
+    checked_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, nullable=False)
+
+
 class Result(Base):
     """One reported line item for one quarter, in long format (processing/results.py).
 
@@ -434,8 +454,8 @@ class Result(Base):
     fiscal_quarter: Mapped[str] = mapped_column(String(8), nullable=False)  # e.g. FY27Q1
     value: Mapped[float] = mapped_column(Float, nullable=False)
     unit: Mapped[str] = mapped_column(String(16), nullable=False)  # INR crore | INR/share | %
-    source: Mapped[str] = mapped_column(String(8), nullable=False)  # xbrl | pdf
-    trust: Mapped[str] = mapped_column(String(8), nullable=False)  # high (xbrl) | low (pdf)
+    source: Mapped[str] = mapped_column(String(8), nullable=False)  # xbrl | sec | pdf
+    trust: Mapped[str] = mapped_column(String(8), nullable=False)  # high (xbrl, sec) | low (pdf)
     filing_id: Mapped[str] = mapped_column(String(64), nullable=False)
     extracted_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, nullable=False)
     flag: Mapped[str | None] = mapped_column(Text)  # validation warning, if any
@@ -463,6 +483,7 @@ SOCIAL_DAILY: Table = SocialDaily.__table__  # type: ignore[assignment]
 FILINGS: Table = Filing.__table__  # type: ignore[assignment]
 PENDING_ACTIONS: Table = PendingAction.__table__  # type: ignore[assignment]
 RESULTS: Table = Result.__table__  # type: ignore[assignment]
+SEC_CHECKED: Table = SecFilingChecked.__table__  # type: ignore[assignment]
 KEY_COLUMNS = ("symbol", "date")
 
 
@@ -1167,7 +1188,7 @@ def filing_urls(symbol: str, engine: Engine | None = None) -> set[str]:
 
 
 def read_result_files(engine: Engine | None = None) -> pd.DataFrame:
-    """Filings that carry a stored results file (XBRL or PDF) on disk."""
+    """Filings that carry a stored results file (XBRL, SEC exhibit or PDF) on disk."""
     columns = ["id", "exchange", "symbol", "filed_at", "subject", "attachment_path"]
     stmt = (
         select(*(FILINGS.c[c] for c in columns))
@@ -1192,6 +1213,32 @@ def read_results(engine: Engine | None = None) -> pd.DataFrame:
     with (engine or get_engine()).connect() as conn:
         df = pd.DataFrame(conn.execute(stmt).mappings().all())
     return df if not df.empty else pd.DataFrame(columns=list(RESULTS.columns.keys()))
+
+
+def checked_sec_filings(
+    symbol: str, engine: Engine | None = None
+) -> dict[str, tuple[dt.date | None, set[str]]]:
+    """Accession -> (results quarter end, bases) for checked 6-Ks; (None, set()) if none."""
+    columns = (SEC_CHECKED.c.accession, SEC_CHECKED.c.period_end, SEC_CHECKED.c.bases)
+    stmt = select(*columns).where(SEC_CHECKED.c.symbol == symbol)
+    with (engine or get_engine()).connect() as conn:
+        return {
+            accession: (period_end, set(bases.split("+")) if bases else set())
+            for accession, period_end, bases in conn.execute(stmt)
+        }
+
+
+def mark_sec_filing_checked(row: dict[str, Any], engine: Engine | None = None) -> None:
+    """Record a checked 6-K (keyed by accession; a re-check replaces the row)."""
+    with (engine or get_engine()).begin() as conn:
+        conn.execute(delete(SEC_CHECKED).where(SEC_CHECKED.c.accession == row["accession"]))
+        conn.execute(SEC_CHECKED.insert(), [row])
+
+
+def forget_sec_filings_without_results(engine: Engine | None = None) -> int:
+    """Delete checked-6-K rows with outcome "none", so they're examined again."""
+    with (engine or get_engine()).begin() as conn:
+        return conn.execute(delete(SEC_CHECKED).where(SEC_CHECKED.c.outcome == "none")).rowcount
 
 
 def count_articles(group_by: str = "fetched_via", engine: Engine | None = None) -> dict[str, int]:

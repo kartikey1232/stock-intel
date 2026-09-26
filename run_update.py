@@ -9,7 +9,8 @@ Steps:
   3. news         collect articles -> article text -> story grouping -> entity linking
                   -> sentiment -> daily aggregates (skip with --skip-news)
   4. filings      HDFC Bank results PDFs from its IR site -> import the results inbox
-                  (data/filings/inbox/) -> classify filings -> extract results
+                  (data/filings/inbox/) -> INFY/HDFCBANK results from SEC 6-Ks
+                  (validated against XBRL) -> classify filings -> extract results
                   (skip with --skip-filings). There is no exchange filings collector:
                   NSE/BSE access is undecided (see README).
   5. social       ValuePickr posts -> stock links -> sentiment -> daily aggregates
@@ -101,6 +102,13 @@ def filings_steps(stocks: list[Stock]) -> list[tuple[str, Callable[[], None]]]:
         if failures:
             raise StepError(f"IR collection failed for {', '.join(failures)}")
 
+    def sec_6ks() -> None:
+        from collectors import sec_results  # imported here: a broken import fails only this step
+
+        failures = sec_results.collect_all(stocks)
+        if failures:
+            raise StepError(f"SEC 6-K collection failed: {failures}")
+
     def inbox() -> None:
         outcomes = result_files.import_inbox(stocks)
         for o in outcomes:
@@ -117,6 +125,7 @@ def filings_steps(stocks: list[Stock]) -> list[tuple[str, Callable[[], None]]]:
     return [
         ("IR results PDFs", ir_pdfs),
         ("results inbox import", inbox),
+        ("SEC 6-K results", sec_6ks),
         ("filing classification", lambda: filing_categories.run()),
         ("results extraction", lambda: results.rebuild(stocks)),
     ]
