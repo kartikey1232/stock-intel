@@ -282,12 +282,11 @@ not in git.
 - Backfill (5 years, FY22Q2–FY27Q1): 25 INFY and 19 HDFCBANK exhibits stored, every
   quarter on both bases except INFY FY23Q4 standalone (that table has no heading).
   All 34 quarter/basis sections that overlap our XBRL match at the printed precision.
-- **Open: HDFCBANK FY25Q4 consolidated net profit.** The 6-K (0001193125-25-087787)
-  prints 19,284.57 before minority interest, 449.69 minority, 18,834.88 after. The XBRL
-  tags 18,834.88 as `ProfitLossForThePeriod` and 18,385.19 (minority subtracted twice) as
-  the after-minority tag our `net_profit` uses, so the results table shows 18,385.19,
-  which looks wrong. The 6-K isn't stored and the SEC step fails every run until this is
-  decided (e.g. an explicit XBRL override for that quarter, or accepting the mismatch).
+- **HDFCBANK FY25Q4 consolidated net profit corrected** to 18,834.88 (XBRL 18,385.19)
+  via `config/results_overrides.yaml`, source 6-K 0001193125-25-087787: the XBRL books
+  the 449.69 minority share as an exceptional item and deducts it again (its segment
+  PBT 25,573.39 vs PBT 25,123.70). FY25Q4 YoY +6.88%; FY26Q4 YoY is +8.05% (it read
+  +10.69% against the wrong figure). The 6-K is now stored and the SEC step passes.
 - Lessons from the live runs: Infosys files two results 6-Ks a quarter (hence the
   "duplicate" outcome and the both-bases rule); Q2 headings say "half-year", which first
   slipped through as a silent "none" (hence `has_results_table` no longer needs the
@@ -295,8 +294,6 @@ not in git.
 
 ## Open items / next steps
 
-0. Decide HDFCBANK FY25Q4 consolidated net profit (see "SEC 6-K results" above); until
-   then the SEC step fails daily.
 1. Each new quarter: download its standalone and consolidated XBRL for all 5 stocks into
    `data/filings/inbox/`, run `collectors.result_files import`, then `checklist`. Review
    any new WARNING flag against the filing before acknowledging it.

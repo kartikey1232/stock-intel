@@ -16,8 +16,9 @@ table but fails those checks, with no other document in the 6-K passing them, fa
 
 Validation: before an exhibit is stored, every figure it prints for a quarter and basis
 we also have as XBRL must equal the XBRL value rounded to the exhibit's printed
-precision. Any other difference fails the 6-K with symbol, quarter, basis and metric, and
-nothing from it is stored.
+precision (or a corrected value from config/results_overrides.yaml naming this 6-K as
+its source, when the override passes its checks). Any other difference fails the 6-K
+with symbol, quarter, basis and metric, and nothing from it is stored.
 
 Politeness: User-Agent "stock-intel <SEC_CONTACT_EMAIL>" (from .env), at most one request
 per second per host, timeouts, retries with backoff, robots.txt checked. 6-Ks already
@@ -46,11 +47,13 @@ from dotenv import load_dotenv
 from collectors.article_text import RobotsCache
 from collectors.result_files import store_result_file
 from config.loader import Stock, load_watchlist
+from config.results_overrides import OverrideKey, ResultOverride, load_result_overrides
 from processing.results import (
     ParsedResult,
     ResultParseError,
     fiscal_quarter,
     has_results_table,
+    override_problem,
     parse_file,
     parse_sec_exhibit,
     rebuild,
@@ -168,14 +171,14 @@ def select_exhibits(
     return selected
 
 
-def stored_xbrl(symbol: str) -> dict[tuple[dt.date, str], dict[str, float]]:
-    """(period_end, basis) -> metric -> value, from every XBRL file stored for `symbol`.
+def stored_xbrl(symbol: str) -> dict[tuple[dt.date, str], ParsedResult]:
+    """(period_end, basis) -> parsed XBRL, from every XBRL file stored for `symbol`.
 
     Read from the files rather than the results table, so XBRL imported earlier in the
     same run counts.
     """
     files = read_result_files()
-    out: dict[tuple[dt.date, str], dict[str, float]] = {}
+    out: dict[tuple[dt.date, str], ParsedResult] = {}
     for f in files[files["symbol"] == symbol].itertuples(index=False):
         path = project_path(f.attachment_path)
         if path.suffix != ".xml":
@@ -186,25 +189,46 @@ def stored_xbrl(symbol: str) -> dict[tuple[dt.date, str], dict[str, float]]:
             logger.error("%s: can't read stored XBRL %s: %s", symbol, f.attachment_path, exc)
             continue
         for p in parsed:
-            out[(p.period_end, p.basis)] = {m: v for m, (v, _) in p.values.items()}
+            out[(p.period_end, p.basis)] = p
     return out
 
 
 def check_against_xbrl(
-    symbol: str, parsed: list[ParsedResult], xbrl: dict[tuple[dt.date, str], dict[str, float]]
+    symbol: str,
+    accession: str,
+    parsed: list[ParsedResult],
+    xbrl: dict[tuple[dt.date, str], ParsedResult],
+    overrides: dict[OverrideKey, ResultOverride],
 ) -> int:
     """Compare each exhibit section with XBRL for its quarter and basis, where we have it.
 
-    Returns the number of sections compared.
+    An override (config/results_overrides.yaml) whose `source` is this 6-K replaces the
+    XBRL figure only if `override_problem` accepts it against this exhibit. Returns the
+    number of sections compared.
 
     Raises:
-        SecValidationError: listing every mismatch.
+        SecValidationError: listing every mismatch (and why an override didn't apply).
     """
     problems, compared = [], 0
     for p in parsed:
-        if (p.period_end, p.basis) in xbrl:
-            compared += 1
-            problems += sec_mismatches(symbol, p, xbrl[(p.period_end, p.basis)])
+        x = xbrl.get((p.period_end, p.basis))
+        if x is None:
+            continue
+        compared += 1
+        values = {m: v for m, (v, _) in x.values.items()}
+        for key, ov in overrides.items():
+            if key[:3] != (symbol, fiscal_quarter(p.period_end), p.basis):
+                continue
+            if ov.source != accession:
+                continue
+            problem = override_problem(ov, x, p)
+            if problem:
+                problems.append(f"override {' '.join(key)} not applied: {problem}")
+            else:
+                values[ov.metric] = ov.value
+                logger.info("%s: override %s applies (XBRL %s -> %s)", symbol, " ".join(key),
+                            x.values[ov.metric][0], ov.value)  # fmt: skip
+        problems += sec_mismatches(symbol, p, values)
     if problems:
         raise SecValidationError("6-K figures differ from XBRL: " + "; ".join(problems))
     return compared
@@ -232,6 +256,7 @@ def collect_symbol(
         if end:
             bases_found.setdefault(end, set()).update(bases)
     xbrl = stored_xbrl(stock.symbol)
+    overrides = load_result_overrides()
     since = today.replace(year=today.year - BACKFILL_YEARS)
     for filing in six_ks(submissions, since):
         if filing.accession in checked:
@@ -244,7 +269,9 @@ def collect_symbol(
             documents = fetch_documents(base, client, limiter, robots)
             exhibits = select_exhibits(documents, stock, stocks)
             for _, _, parsed in exhibits:
-                counts["validated"] += check_against_xbrl(stock.symbol, parsed, xbrl)
+                counts["validated"] += check_against_xbrl(
+                    stock.symbol, filing.accession, parsed, xbrl, overrides
+                )
         except (ResultParseError, SecValidationError) as exc:
             failures.append(f"{filing.accession} ({filing.filed_on}): {exc}")
             logger.error("%s 6-K %s filed %s: %s", stock.symbol, filing.accession,

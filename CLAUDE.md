@@ -229,11 +229,22 @@ uv run streamlit run dashboard.py               # launch the dashboard
   before anything is stored, and it isn't recorded in `sec_filings_checked`, so it fails
   again every run until resolved. `rebuild` logs an ERROR when XBRL imported later
   disagrees with a stored exhibit (XBRL still wins). Don't loosen the tolerance to make a
-  mismatch pass; find out which figure is wrong. Known case: HDFCBANK FY25Q4 consolidated
-  net profit. The 6-K prints 19,284.57 before minority interest, 449.69 minority, 18,834.88
-  after; the XBRL tags 18,834.88 as `ProfitLossForThePeriod` and 18,385.19 (minority
-  subtracted twice) as the after-minority tag that `net_profit` uses. So the XBRL is
-  internally inconsistent, and that 6-K fails every run until the user decides.
+  mismatch pass; find out which figure is wrong.
+- Results overrides (`config/results_overrides.yaml`, `processing/results.py`
+  `override_problem`): a corrected value for one XBRL figure, allowed only when a stored
+  SEC 6-K (`source`, an accession number) prints it while the XBRL differs AND the entry's
+  `xbrl_check` (an identity between the same XBRL's elements, e.g.
+  `SegmentProfitBeforeTax = ProfitLossFromOrdinaryActivitiesBeforeTax`) fails by more
+  than ₹0.01 crore. Both are re-checked on every rebuild and in the SEC collector (which
+  honours only overrides whose source is the 6-K it's validating); a failing override is
+  not applied and logs an ERROR. Corrected rows keep `corrected_from` (the XBRL value)
+  and `correction`; `--report` marks them "c" with both values in the note, the
+  dashboard has a "corrected" column plus a ✎ caption with the reason. The one entry:
+  HDFCBANK FY25Q4 consolidated net profit 18,834.88 (XBRL 18,385.19: the 449.69 minority
+  share is booked as an exceptional item and deducted again). HDFC Bank's consolidated
+  XBRL books the minority share as an exceptional item in FY25Q2, FY26Q2 and FY26Q4 too,
+  but with minority interest 0, so those net profits are right; x:ExceptionalItems and
+  x:ProfitLossFromOrdinaryActivitiesBeforeTax are off in those quarters.
 - SEC access: EDGAR is not an exchange host, so principle 7 doesn't apply. SEC's fair
   access policy requires a User-Agent with a contact (`SEC_CONTACT_EMAIL` in .env) and at
   most 10 requests/s; we use 1/s per host (`MIN_INTERVAL_S`). Checked 6-Ks are never

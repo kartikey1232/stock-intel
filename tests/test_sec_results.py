@@ -10,13 +10,16 @@ import json
 from pathlib import Path
 
 import httpx
+import pandas as pd
 import pytest
+import yaml
 from sqlalchemy import Engine, select
 
 import collectors.result_files as rf
 import collectors.sec_results as sec
 import processing.results as res
 from config.loader import load_watchlist
+from config.results_overrides import ResultOverrideError, load_result_overrides
 from storage import db
 from tests.test_results import xbrl
 
@@ -379,3 +382,107 @@ def test_recheck_forgets_only_filings_without_results(engine, fake_client) -> No
     sec.collect_all(STOCKS, client=fake_client(handler))
     assert db.forget_sec_filings_without_results() == 1
     assert set(db.checked_sec_filings("INFY")) == {"0001-26-02"}
+
+
+# --- overrides -----------------------------------------------------------------------
+
+ACCESSION = "0001067491-26-000034"
+
+
+def write_overrides(path: Path, **changes) -> Path:
+    entry = {
+        "symbol": "INFY", "quarter": "FY27Q1", "basis": "consolidated", "metric": "revenue",
+        "value": 48211, "source": ACCESSION,
+        "xbrl_check": "SegmentProfitBeforeTax = ProfitLossFromOrdinaryActivitiesBeforeTax",
+        "reason": "test",
+    }  # fmt: skip
+    entry.update(changes)
+    path.write_text(yaml.safe_dump({"overrides": [entry]}), encoding="utf-8")
+    return path
+
+
+def check_facts(segment: float, pbt: float) -> str:
+    """XBRL facts for the xbrl_check identity, in absolute INR."""
+    return "".join(
+        f'<in-capmkt:{n} contextRef="OneD" unitRef="INR">{v * 1e7:.0f}</in-capmkt:{n}>'
+        for n, v in (("SegmentProfitBeforeTax", segment),
+                     ("ProfitLossFromOrdinaryActivitiesBeforeTax", pbt))
+    )  # fmt: skip
+
+
+def test_overrides_file_is_validated(tmp_path: Path) -> None:
+    ok = load_result_overrides(write_overrides(tmp_path / "a.yaml"))
+    ov = ok[("INFY", "FY27Q1", "consolidated", "revenue")]
+    left, right = ov.check_sides()
+    assert ov.value == 48211.0 and left == [(1, "SegmentProfitBeforeTax")]
+    assert right == [(1, "ProfitLossFromOrdinaryActivitiesBeforeTax")]
+    for bad in ({"source": "d101962dex99"}, {"value": "high"}, {"xbrl_check": "A + B"},
+                {"xbrl_check": "A B = C"}, {"reason": ""}, {"quarter": "2026Q1"}):  # fmt: skip
+        with pytest.raises(ResultOverrideError):
+            load_result_overrides(write_overrides(tmp_path / "b.yaml", **bad))
+    assert load_result_overrides(tmp_path / "missing.yaml") == {}
+
+
+def test_override_needs_a_contradicting_6k_and_an_inconsistent_xbrl(tmp_path: Path) -> None:
+    ov = next(iter(load_result_overrides(write_overrides(tmp_path / "o.yaml")).values()))
+    sec_part = infy_consolidated()  # prints revenue 48,211
+
+    def x(revenue: float, segment: float, pbt: float) -> res.ParsedResult:
+        return res.parse_xbrl(xbrl(nature="Consolidated", revenue=revenue * 1e7,
+                                   extra=check_facts(segment, pbt)))  # fmt: skip
+
+    assert res.override_problem(ov, x(48220, 100, 90), sec_part) is None
+    assert "holds" in res.override_problem(ov, x(48220, 100, 100), sec_part)
+    assert "already agrees" in res.override_problem(ov, x(48211.3, 100, 90), sec_part)
+    assert "isn't stored" in res.override_problem(ov, x(48220, 100, 90), None)
+    wrong = load_result_overrides(write_overrides(tmp_path / "w.yaml", value=48300))
+    assert "prints 48,211" in res.override_problem(next(iter(wrong.values())),
+                                                   x(48220, 100, 90), sec_part)  # fmt: skip
+    no_facts = res.parse_xbrl(xbrl(nature="Consolidated", revenue=482_200_000_000))
+    assert "has no SegmentProfitBeforeTax" in res.override_problem(ov, no_facts, sec_part)
+
+
+def store_bad_infy_xbrl(segment: float, pbt: float) -> None:
+    """Consolidated XBRL whose revenue (48,220) contradicts the 6-K (48,211)."""
+    stock = next(s for s in STOCKS if s.symbol == "INFY")
+    content = xbrl(nature="Consolidated", revenue=482_200_000_000, profit=77_690_000_000,
+                   eps=19.19, extra=check_facts(segment, pbt))  # fmt: skip
+    rf.store_result_file(content, "xml", stock, [res.parse_xbrl(content)], "NSE")
+
+
+def test_valid_override_lets_the_6k_in_and_corrects_the_xbrl(
+    engine, fake_client, monkeypatch, tmp_path
+) -> None:
+    overrides = load_result_overrides(write_overrides(tmp_path / "o.yaml"))
+    monkeypatch.setattr(sec, "load_result_overrides", lambda: overrides)
+    monkeypatch.setattr(res, "load_result_overrides", lambda: overrides)
+    store_bad_infy_xbrl(segment=100, pbt=90)
+    handler = FakeSec(submissions((ACCESSION, "2026-07-23")),
+                      {ACCESSION: {"exv99w03.htm": INFY_FY27Q1}})  # fmt: skip
+    assert sec.collect_all(STOCKS, client=fake_client(handler)) == {}
+
+    res.rebuild(STOCKS)
+    r = db.read_results().set_index(["basis", "metric"]).loc[("consolidated", "revenue")]
+    assert (r["source"], r["value"], r["corrected_from"]) == ("xbrl", 48211.0, 48220.0)
+    assert r["correction"] == f"6-K {ACCESSION}: test"
+    line = res.report().set_index("quarter").loc["FY27Q1"]
+    assert line["revenue"] == "48,211c"
+    assert f"corrected revenue: 48,211.00 (XBRL 48,220.00; 6-K {ACCESSION})" in line["note"]
+
+
+def test_override_is_refused_when_the_xbrl_is_consistent(
+    engine, fake_client, monkeypatch, tmp_path, caplog
+) -> None:
+    overrides = load_result_overrides(write_overrides(tmp_path / "o.yaml"))
+    monkeypatch.setattr(sec, "load_result_overrides", lambda: overrides)
+    monkeypatch.setattr(res, "load_result_overrides", lambda: overrides)
+    store_bad_infy_xbrl(segment=100, pbt=100)  # identity holds: no evidence of an XBRL error
+    handler = FakeSec(submissions((ACCESSION, "2026-07-23")),
+                      {ACCESSION: {"exv99w03.htm": INFY_FY27Q1}})  # fmt: skip
+    failure = sec.collect_all(STOCKS, client=fake_client(handler))["INFY"]
+    assert "override INFY FY27Q1 consolidated revenue not applied: xbrl_check holds" in failure
+    assert "revenue: 6-K prints 48,211" in failure
+    res.rebuild(STOCKS)
+    assert "Override INFY FY27Q1 consolidated revenue not applied" in caplog.text
+    r = db.read_results().set_index(["basis", "metric"]).loc[("consolidated", "revenue")]
+    assert r["value"] == 48220.0 and pd.isna(r["corrected_from"])

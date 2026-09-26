@@ -27,6 +27,12 @@ Oct 2025 demerger of the CV business, booked in FY26Q2), its top line excludes t
 business while earlier quarters, as originally filed, include it. XBRL has no restated
 comparatives, so `changes` marks QoQ/YoY that span such a quarter instead of restating.
 
+Overrides: config/results_overrides.yaml corrects an XBRL figure only when a stored SEC 6-K
+(its `source`) prints a different value AND an identity between the XBRL's own elements
+(`xbrl_check`) fails, i.e. the XBRL is internally inconsistent (`override_problem`). A
+corrected row keeps the XBRL figure in `corrected_from` and the source and reason in
+`correction`; overrides that fail either condition aren't applied and log an ERROR.
+
 Validation flags a headline value that moves more than 5x (up or down) from the previous
 quarter, or changes sign where that shouldn't happen (revenue, income, NII, NPAs); a
 profit or EPS sign change is flagged for checking. Flags usually mean a unit or parsing
@@ -55,6 +61,7 @@ from lxml import etree
 
 from config.acknowledged_flags import AcknowledgedFlag, FlagKey, load_acknowledged_flags
 from config.loader import Stock, load_watchlist
+from config.results_overrides import OverrideKey, ResultOverride, load_result_overrides
 from storage.db import (
     init_db,
     project_path,
@@ -747,24 +754,112 @@ def build_rows(parsed: list[tuple[str, str, ParsedResult]], now: dt.datetime) ->
                 "extracted_at": now,
                 "flag": None,
                 "flag_reviewed": None,
+                "corrected_from": None,
+                "correction": None,
             }
     return list(rows.values())
 
 
-def cross_check(parsed: list[tuple[str, str, ParsedResult]]) -> list[str]:
+def cross_check(
+    parsed: list[tuple[str, str, ParsedResult]],
+    overrides: dict[OverrideKey, ResultOverride] | None = None,
+) -> list[str]:
     """`sec_mismatches` for every SEC exhibit with XBRL for the same quarter and basis.
 
-    The SEC collector checks this before storing an exhibit; this catches XBRL imported
-    after the exhibit was stored.
+    XBRL figures corrected by an applicable override (see `applicable_overrides`) are
+    compared at their corrected value. The SEC collector checks this before storing an
+    exhibit; this catches XBRL imported after the exhibit was stored.
     """
     xbrl = {(s, p.period_end, p.basis): {m: v for m, (v, _) in p.values.items()}
             for s, _, p in parsed if p.kind == "xbrl"}  # fmt: skip
+    for (symbol, _, basis, metric), ov in (overrides or {}).items():
+        for (s, end, b), values in xbrl.items():
+            if (s, fiscal_quarter(end), b) == (symbol, ov.quarter, basis):
+                values[metric] = ov.value
     return [
         problem
         for s, _, p in parsed
         if p.kind == "sec" and (s, p.period_end, p.basis) in xbrl
         for problem in sec_mismatches(s, p, xbrl[(s, p.period_end, p.basis)])
     ]
+
+
+# --- overrides ----------------------------------------------------------------------
+
+CHECK_TOLERANCE = 0.01  # ₹ crore: an xbrl_check within this counts as holding
+
+
+def override_problem(
+    ov: ResultOverride, xbrl: ParsedResult | None, sec: ParsedResult | None
+) -> str | None:
+    """Why `ov` may not be applied, or None if it may.
+
+    `xbrl` is the XBRL for the override's quarter and basis, `sec` the same quarter and
+    basis parsed from the 6-K named as `ov.source`. Required: the 6-K prints `ov.value`
+    (at its printed precision) while the XBRL differs, and `ov.xbrl_check` fails on the
+    XBRL by more than CHECK_TOLERANCE.
+    """
+    if xbrl is None or ov.metric not in xbrl.values:
+        return "there is no XBRL figure to correct"
+    if sec is None or ov.metric not in sec.precision:
+        return f"6-K {ov.source} isn't stored or doesn't print {ov.metric} for this quarter"
+    printed, step = sec.values[ov.metric][0], sec.precision[ov.metric]
+    tolerance = step / 2 + 1e-9 * max(1.0, abs(printed))
+    if abs(ov.value - printed) > tolerance:
+        return f"6-K {ov.source} prints {printed:,}, not {ov.value:,}"
+    if abs(xbrl.values[ov.metric][0] - printed) <= tolerance:
+        return "the XBRL already agrees with the 6-K"
+    sums = []
+    for side in ov.check_sides():
+        total = 0.0
+        for sign, name in side:
+            if f"x:{name}" not in xbrl.values:
+                return f"the XBRL has no {name} for xbrl_check"
+            total += sign * xbrl.values[f"x:{name}"][0]
+        sums.append(total)
+    if abs(sums[0] - sums[1]) <= CHECK_TOLERANCE:
+        return f"xbrl_check holds ({sums[0]:,.2f}), so the XBRL isn't shown to be inconsistent"
+    return None
+
+
+def applicable_overrides(
+    parsed: list[tuple[str, str, ParsedResult]],
+    accessions: dict[str, str],
+    overrides: dict[OverrideKey, ResultOverride],
+) -> dict[OverrideKey, ResultOverride]:
+    """The overrides that pass `override_problem`; the others are logged as errors.
+
+    `accessions` maps filing id -> 6-K accession number for stored SEC exhibits.
+    """
+    valid = {}
+    for key, ov in overrides.items():
+        where = key[:3]  # symbol, quarter, basis
+        xbrl = next((p for s, _, p in parsed
+                     if p.kind == "xbrl" and _where(s, p) == where), None)  # fmt: skip
+        sec = next((p for s, fid, p in parsed if p.kind == "sec" and _where(s, p) == where
+                    and accessions.get(fid) == ov.source), None)  # fmt: skip
+        problem = override_problem(ov, xbrl, sec)
+        if problem:
+            logger.error("Override %s not applied: %s", " ".join(key), problem)
+        else:
+            valid[key] = ov
+    return valid
+
+
+def _where(symbol: str, p: ParsedResult) -> tuple[str, str, str]:
+    """(symbol, fiscal quarter, basis) of a parsed section."""
+    return (symbol, fiscal_quarter(p.period_end), p.basis)
+
+
+def apply_overrides(rows: list[dict], overrides: dict[OverrideKey, ResultOverride]) -> None:
+    """Replace overridden XBRL values in results rows, keeping the XBRL figure."""
+    for row in rows:
+        ov = overrides.get(flag_key(row))
+        if ov is not None and row["source"] == "xbrl":
+            row["corrected_from"], row["value"] = row["value"], ov.value
+            row["correction"] = f"6-K {ov.source}: {ov.reason}"
+            logger.info("%s corrected: XBRL %s -> %s", " ".join(ov.key), row["corrected_from"],
+                        ov.value)  # fmt: skip
 
 
 def discontinued_quarters(results: pd.DataFrame) -> pd.DataFrame:
@@ -906,6 +1001,7 @@ def rebuild(stocks: list[Stock]) -> list[dict]:
     files = read_result_files()
     parsed = []
     filing_meta = {}
+    accessions: dict[str, str] = {}
     for f in files.itertuples(index=False):
         try:
             per_file = parse_file(project_path(f.attachment_path), stocks)
@@ -913,6 +1009,8 @@ def rebuild(stocks: list[Stock]) -> list[dict]:
             logger.error("%s: can't parse %s: %s", f.symbol, f.attachment_path, exc)
             continue
         parsed += [(f.symbol, f.id, p) for p in per_file]
+        if f.exchange == "SEC" and isinstance(f.description, str):
+            accessions[f.id] = f.description.split("/", 1)[0]
         # A 6-K's stored date is its EDGAR filing date when the exhibit states no board date.
         known = pd.Timestamp(f.filed_at).tz_convert(IST).date() if f.exchange == "SEC" else None
         filed_on, subject = filing_date_and_subject(per_file, known)
@@ -924,10 +1022,13 @@ def rebuild(stocks: list[Stock]) -> list[dict]:
         if p.kind == "xbrl" and "x:InterestEarned" not in p.values and symbol == "HDFCBANK":
             logger.warning("HDFCBANK XBRL %s has none of the expected bank tags; check "
                            "XBRL_TAGS against the file", p.period_end)  # fmt: skip
-    for problem in cross_check(parsed):
+    overrides = applicable_overrides(parsed, accessions, load_result_overrides())
+    for problem in cross_check(parsed, overrides):
         logger.error("SEC 6-K disagrees with XBRL (XBRL used): %s", problem)
     acknowledged = load_acknowledged_flags()
-    rows = validate(build_rows(parsed, dt.datetime.now(dt.UTC)), acknowledged)
+    rows = build_rows(parsed, dt.datetime.now(dt.UTC))
+    apply_overrides(rows, overrides)
+    rows = validate(rows, acknowledged)
     replace_results(rows)
     log_flags(rows, acknowledged)
     logger.info("Results: %d row(s) from %d file(s)", len(rows), len(files))
@@ -954,13 +1055,26 @@ def flag_mark(row: pd.Series) -> str:
     return "~" if pd.notna(row.get("flag_reviewed")) else "!"
 
 
+def is_corrected(row: pd.Series) -> bool:
+    """True if an override replaced this row's XBRL value."""
+    return pd.notna(row.get("corrected_from"))
+
+
+def correction_note(row: pd.Series) -> str:
+    """ "corrected net_profit: 18,834.88 (XBRL 18,385.19; 6-K <accession>)"."""
+    source = str(row["correction"]).split(":", 1)[0]
+    return (f"corrected {row['metric']}: {row['value']:,.2f} "
+            f"(XBRL {row['corrected_from']:,.2f}; {source})")  # fmt: skip
+
+
 def report(quarters: int = 8) -> pd.DataFrame:
     """Last `quarters` of revenue (or total income for banks) and net profit per stock.
 
     Consolidated where available, else standalone. Values in ₹ crore; '*' marks
-    lower-trust PDF values, '^' SEC 6-K values, '!' unreviewed flags and '~' reviewed
-    ones. `note` says when QoQ/YoY comparisons for that quarter aren't like-for-like (see
-    `changes`).
+    lower-trust PDF values, '^' SEC 6-K values, 'c' values corrected by an override,
+    '!' unreviewed flags and '~' reviewed ones. `note` says when QoQ/YoY comparisons for
+    that quarter aren't like-for-like (see `changes`), and gives the XBRL figure and
+    source of any correction.
     """
     all_rows = read_results()
     df = all_rows[all_rows["metric"].isin(["revenue", "total_income", "net_profit"])]
@@ -974,6 +1088,7 @@ def report(quarters: int = 8) -> pd.DataFrame:
         top_metric = "revenue" if (g["metric"] == "revenue").any() else "total_income"
         for (fq, pe), q in g.groupby(["fiscal_quarter", "period_end"]):
             row = {"symbol": symbol, "basis": basis, "quarter": fq, "period_end": pe}
+            corrections = []
             for metric, label in ((top_metric, "revenue"), ("net_profit", "net_profit")):
                 hit = q[q["metric"] == metric]
                 if hit.empty:
@@ -981,10 +1096,13 @@ def report(quarters: int = 8) -> pd.DataFrame:
                     continue
                 h = hit.iloc[0]
                 marks = {"pdf": "*", "sec": "^"}.get(h["source"], "") + flag_mark(h)
+                if is_corrected(h):
+                    marks += "c"
+                    corrections.append(correction_note(h))
                 row[label] = f"{h['value']:,.0f}{marks}"
             d = diff[(diff["symbol"] == symbol) & (diff["basis"] == basis)
                      & (diff["fiscal_quarter"] == fq) & (diff["metric"] == top_metric)]  # fmt: skip
-            row["note"] = joined_notes(d)
+            row["note"] = "; ".join(n for n in (*corrections, joined_notes(d)) if n)
             out.append(row)
     table = pd.DataFrame(out).sort_values(["symbol", "period_end"])
     return table.groupby("symbol").tail(quarters).reset_index(drop=True)
@@ -1001,8 +1119,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.report:
         table = report()
         print("No results yet." if table.empty else table.to_string(index=False))
-        print("\n* = from PDF (lower trust)   ^ = from SEC 6-K   ! = validation flag   "
-              "~ = reviewed flag   values in ₹ crore")  # fmt: skip
+        print("\n* = from PDF (lower trust)   ^ = from SEC 6-K   c = corrected (see note, "
+              "config/results_overrides.yaml)   ! = validation flag   ~ = reviewed flag   "
+              "values in ₹ crore")  # fmt: skip
     return 0
 
 

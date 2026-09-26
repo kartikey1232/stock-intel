@@ -350,3 +350,20 @@ def test_signal_markers_follow_toggles_and_sit_outside_the_candle() -> None:
         history(), "TEST", signals=dashboard.signal_markers(signals, bars, rules, ["golden_cross"])
     )
     assert "Golden cross (SMA 50 > 200)" in [t.name for t in fig.data]
+
+
+def test_results_table_shows_corrected_values_with_the_xbrl_figure() -> None:
+    base = {"symbol": "HDFCBANK", "basis": "consolidated", "unit": "INR crore",
+            "source": "xbrl", "trust": "high", "flag": None, "flag_reviewed": None}  # fmt: skip
+    rows = [
+        {**base, "period_end": dt.date(2025, 3, 31), "fiscal_quarter": "FY25Q4",
+         "metric": "net_profit", "value": 18834.88, "corrected_from": 18385.19,
+         "correction": "6-K 0001193125-25-087787: minority twice"},
+        {**base, "period_end": dt.date(2025, 3, 31), "fiscal_quarter": "FY25Q4",
+         "metric": "total_income", "value": 1.0, "corrected_from": None, "correction": None},
+    ]  # fmt: skip
+    table = dashboard.results_table(pd.DataFrame(rows), "consolidated")
+    assert table.loc[0, "net_profit"] == 18834.88
+    assert table.loc[0, "corrected"] == (
+        "corrected net_profit: 18,834.88 (XBRL 18,385.19; 6-K 0001193125-25-087787)"
+    )

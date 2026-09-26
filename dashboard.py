@@ -17,7 +17,7 @@ from config.news_sources import load_news_sources
 from config.signals import SignalRule, load_signals
 from processing.adjustments import adjust_prices
 from processing.entities import LINK_THRESHOLD
-from processing.results import changes, joined_notes
+from processing.results import changes, correction_note, joined_notes
 from processing.sentiment import TradingCalendar, news_time, session_for, story_weighted_average
 from processing.signals import describe_signal_value, display_signals
 from storage.db import (
@@ -217,6 +217,14 @@ def source_label(raw: pd.DataFrame) -> str:
     return "SEC 6-K" if (raw["source"] == "sec").any() else "XBRL"
 
 
+def corrections_text(raw: pd.DataFrame) -> str:
+    """One quarter's overridden values, each with the XBRL figure it replaced."""
+    if "corrected_from" not in raw:
+        return ""
+    fixed = raw[raw["corrected_from"].notna()]
+    return "; ".join(correction_note(r) for _, r in fixed.sort_values("metric").iterrows())
+
+
 def flags_text(raw: pd.DataFrame) -> str:
     """One quarter's validation flags; reviewed ones show as "reviewed: <reason>"."""
     flagged = raw[raw["flag"].notna()]
@@ -233,7 +241,8 @@ def results_table(results: pd.DataFrame, basis: str, quarters: int = 8) -> pd.Da
 
     Columns: quarter, period_end, top_line (revenue, or total income when there's no
     revenue line, as for banks), top_line_yoy, top_line_qoq, net_profit, net_profit_yoy,
-    net_profit_qoq, eps, source, flags, notes (why QoQ/YoY aren't like-for-like, if so).
+    net_profit_qoq, eps, source, corrected (overridden values and the XBRL figures they
+    replaced), flags, notes (why QoQ/YoY aren't like-for-like, if so).
     """
     rows = results[results["basis"] == basis]
     if rows.empty:
@@ -251,6 +260,7 @@ def results_table(results: pd.DataFrame, basis: str, quarters: int = 8) -> pd.Da
             row[f"{name}_qoq"] = by["qoq"].get(metric)
         row["eps"] = by["value"].get("eps")
         row["source"] = source_label(raw)
+        row["corrected"] = corrections_text(raw)
         row["flags"] = flags_text(raw)
         row["notes"] = joined_notes(q[q["metric"].isin([top, "net_profit"])])
         out.append(row)
@@ -928,6 +938,12 @@ def render_results(results: pd.DataFrame) -> None:
         width="stretch",
     )
     st.caption("₹ crore; EPS in ₹ per share, as reported (not restated for bonuses/splits).")
+    for quarter, text in table.loc[table["corrected"] != "", ["quarter", "corrected"]].itertuples(
+        index=False
+    ):
+        reasons = results[(results["fiscal_quarter"] == quarter) & (results["basis"] == basis)
+                          & results["correction"].notna()]["correction"]  # fmt: skip
+        st.caption(f"✎ {quarter} {text}. Why: {'; '.join(reasons)}")
     for quarter, note in table.loc[table["notes"] != "", ["quarter", "notes"]].itertuples(
         index=False
     ):

@@ -1,0 +1,29 @@
+# Corrections to XBRL results figures (see processing/results.py `override_problem`).
+#
+# Allowed only when a primary filing contradicts the XBRL AND the XBRL is internally
+# inconsistent. Both are checked on every rebuild, and an override that fails either
+# check is not applied (logged as an ERROR):
+#   - `source` is the accession number of a stored SEC 6-K whose exhibit prints `value`
+#     for this quarter, basis and metric (at its printed precision), and the XBRL differs;
+#   - `xbrl_check` is an identity between XBRL elements of the same filing that should
+#     hold but doesn't (off by more than ₹0.01 crore).
+# Corrected rows keep the XBRL figure in `results.corrected_from` and show "corrected"
+# in --report and the dashboard. Never add an entry to silence a mismatch you haven't
+# traced to a specific error in the XBRL.
+#
+# Fields: symbol, quarter (FY25Q4), basis, metric, value (₹ crore for money), source,
+# xbrl_check, reason.
+
+overrides:
+- symbol: HDFCBANK
+  quarter: FY25Q4
+  basis: consolidated
+  metric: net_profit
+  value: 18834.88
+  source: 0001193125-25-087787
+  xbrl_check: SegmentProfitBeforeTax = ProfitLossFromOrdinaryActivitiesBeforeTax
+  reason: >-
+    XBRL books the 449.69 minority share as an exceptional item (the 6-K shows none) and
+    deducts it again as minority interest, so its after-minority profit 18,385.19 is
+    449.69 too low. The 6-K prints 19,284.57 before minority, 449.69 minority, 18,834.88
+    after; the XBRL's own segment PBT (25,573.39) exceeds its PBT (25,123.70) by 449.69.

@@ -246,6 +246,11 @@ Where the files come from:
   uv run python -m collectors.sec_results            # new 6-Ks
   uv run python -m collectors.sec_results --recheck  # after a parser fix: re-examine "no results" 6-Ks
   ```
+- **Corrections** (`config/results_overrides.yaml`): when a 6-K contradicts the XBRL and
+  the XBRL is provably inconsistent with itself (an identity between its own elements
+  fails), an entry replaces that one XBRL figure. Both conditions are re-checked on every
+  rebuild; corrected values show "c" in `--report` and "corrected" in the dashboard, with
+  the XBRL figure alongside.
 - **HDFC Bank results PDFs** from its investor-relations site, fetched automatically
   (trust = low, used only where neither XBRL nor a 6-K exists):
 
@@ -503,7 +508,8 @@ New stocks get their full 5-year history on the next update.
 - `pending_actions` (`id`): symbol, action_type, ratio, price_factor, record_date,
   ex_date, status, note, filed_at, subject. Rebuilt on every run.
 - `results` (`symbol, period_end, basis, metric`): fiscal_quarter, value, unit, source
-  (xbrl/sec/pdf), trust, filing_id, extracted_at, flag. Rebuilt from stored files.
+  (xbrl/sec/pdf), trust, filing_id, extracted_at, flag, flag_reviewed, corrected_from,
+  correction. Rebuilt from stored files.
 - `sec_filings_checked` (`accession`): symbol, filed_on, period_end, outcome (results/none),
   checked_at. 6-Ks the SEC collector has examined; failed ones aren't recorded.
 

@@ -460,6 +460,8 @@ class Result(Base):
     extracted_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, nullable=False)
     flag: Mapped[str | None] = mapped_column(Text)  # validation warning, if any
     flag_reviewed: Mapped[str | None] = mapped_column(Text)  # acknowledgement reason, if any
+    corrected_from: Mapped[float | None] = mapped_column(Float)  # XBRL value an override replaced
+    correction: Mapped[str | None] = mapped_column(Text)  # the override's source and reason
 
 
 TEXT_STATUSES = ("pending", "ok", "paywalled", "failed", "skipped")
@@ -1189,7 +1191,7 @@ def filing_urls(symbol: str, engine: Engine | None = None) -> set[str]:
 
 def read_result_files(engine: Engine | None = None) -> pd.DataFrame:
     """Filings that carry a stored results file (XBRL, SEC exhibit or PDF) on disk."""
-    columns = ["id", "exchange", "symbol", "filed_at", "subject", "attachment_path"]
+    columns = ["id", "exchange", "symbol", "filed_at", "subject", "description", "attachment_path"]
     stmt = (
         select(*(FILINGS.c[c] for c in columns))
         .where(FILINGS.c.filing_type == "results", FILINGS.c.attachment_path.is_not(None))
